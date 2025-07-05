@@ -12,6 +12,7 @@ import { Progress } from "@/components/ui/progress"
 import { Spinner } from "@/components/ui/spinner"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { CreateSessionDialog } from "@/components/CreateSessionDialog"
+import { JoinSessionDialog } from "@/components/JoinSessionDialog"
 import { SessionListDialog } from "@/components/SessionListDialog"
 import { cn } from "@/lib/utils"
 
@@ -64,6 +65,10 @@ export default function DashboardPage() {
   }
 
   const handleCreateSessionSuccess = (sessionId: string) => {
+    // ADD DEBUG LOGGING
+    console.log('🎯 Dashboard received session ID:', sessionId)
+    console.log('🚀 Navigating to session page...')
+    
     // Navigate to the created session
     router.push(`/session/${sessionId}`)
   }
@@ -92,15 +97,25 @@ export default function DashboardPage() {
               <Badge variant="secondary">Beta</Badge>
             </div>
             <div className="flex items-center space-x-4">
-              <Button variant="outline" size="icon" onClick={() => setIsMuted(!isMuted)}>
+              <Button 
+                variant="outline" 
+                size="icon" 
+                onClick={() => setIsMuted(!isMuted)}
+                title={isMuted ? "Unmute" : "Mute"}
+              >
                 {isMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
               </Button>
-              <Button variant="outline" size="icon" onClick={() => setIsRecording(!isRecording)}>
+              <Button 
+                variant="outline" 
+                size="icon" 
+                onClick={() => setIsRecording(!isRecording)}
+                title={isRecording ? "Stop Recording" : "Start Recording"}
+              >
                 {isRecording ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
               </Button>
               <ThemeToggle />
               <Avatar>
-                <AvatarImage src="/placeholder-avatar.jpg" alt="User" />
+                <AvatarImage src="/placeholder-avatar.svg" alt="User" />
                 <AvatarFallback>JD</AvatarFallback>
               </Avatar>
             </div>
@@ -125,7 +140,9 @@ export default function DashboardPage() {
                 <CardDescription>Start a new translation session</CardDescription>
               </CardHeader>
             </Card>
-            <SessionListDialog />
+            
+            <JoinSessionDialog />
+            
             <Card className="hover:shadow-md transition-shadow cursor-pointer">
               <CardHeader className="pb-4">
                 <CardTitle className="flex items-center space-x-2">
@@ -135,7 +152,7 @@ export default function DashboardPage() {
                 <CardDescription>View your translation history</CardDescription>
               </CardHeader>
             </Card>
-            <SessionListDialog />
+            
             <Card className="hover:shadow-md transition-shadow cursor-pointer">
               <CardHeader className="pb-4">
                 <CardTitle className="flex items-center space-x-2">

@@ -69,17 +69,18 @@ class AudioOutputFilter(FrameProcessor):
         return frame
 
 class TranslationProcessor(FrameProcessor):
-    """Enhanced translation processor with monitoring"""
+    """Enhanced translation processor with monitoring and WebSocket integration"""
     
-    def __init__(self, llm_service: GeminiMultimodalLiveLLMService, direction: str):
+    def __init__(self, llm_service: GeminiMultimodalLiveLLMService, direction: str, session_id: str):
         super().__init__()
         self.llm_service = llm_service
         self.direction = direction
+        self.session_id = session_id
         self.translation_count = 0
         self.last_translation_time = None
         
     async def process_frame(self, frame: AudioRawFrame) -> Optional[AudioRawFrame]:
-        """Process audio frame through LLM with monitoring"""
+        """Process audio frame through LLM with monitoring and real-time updates"""
         start_time = datetime.now()
         
         try:
@@ -91,13 +92,52 @@ class TranslationProcessor(FrameProcessor):
                 processing_time = (datetime.now() - start_time).total_seconds() * 1000
                 self.last_translation_time = processing_time
                 
+                # Broadcast transcription update via WebSocket
+                await self._broadcast_transcription(frame, result)
+                
                 logger.info(f"Translation {self.direction} #{self.translation_count} completed in {processing_time:.2f}ms")
                 
             return result
             
         except Exception as e:
             logger.error(f"Translation error in {self.direction}: {e}")
+            await self._broadcast_error(str(e))
             return None
+            
+    async def _broadcast_transcription(self, input_frame: AudioRawFrame, output_frame: AudioRawFrame):
+        """Broadcast transcription update via WebSocket"""
+        try:
+            from app.services.websocket_service import websocket_manager
+            
+            # Extract transcription data from frames
+            # This is a simplified example - real implementation would extract text from audio frames
+            original_text = getattr(input_frame, 'transcription', 'Audio input received')
+            translated_text = getattr(output_frame, 'transcription', 'Translation generated')
+            
+            await websocket_manager.broadcast_transcription(
+                session_id=self.session_id,
+                speaker_id=getattr(input_frame, 'participant_id', 'unknown'),
+                original_text=original_text,
+                translated_text=translated_text,
+                language_from=self.direction.split('→')[0] if '→' in self.direction else 'unknown',
+                language_to=self.direction.split('→')[1] if '→' in self.direction else 'unknown',
+                confidence=0.85,  # Placeholder - real implementation would get from Gemini
+                is_partial=False
+            )
+        except Exception as e:
+            logger.warning(f"Failed to broadcast transcription: {e}")
+            
+    async def _broadcast_error(self, error_message: str):
+        """Broadcast error via WebSocket"""
+        try:
+            from app.services.websocket_service import websocket_manager
+            await websocket_manager.broadcast_error(
+                session_id=self.session_id,
+                error_code="TRANSLATION_ERROR",
+                error_message=error_message
+            )
+        except Exception as e:
+            logger.warning(f"Failed to broadcast error: {e}")
 
 class DualPipelineManager:
     """Manages dual parallel translation pipelines"""
@@ -167,7 +207,8 @@ class DualPipelineManager:
             # Create translation processor
             self.processors[direction] = TranslationProcessor(
                 self.llm_services[direction], 
-                f"{self.config.language_a}→{self.config.language_b}"
+                f"{self.config.language_a}→{self.config.language_b}",
+                self.config.session_id
             )
             
             # Create pipeline A→B
@@ -231,7 +272,8 @@ class DualPipelineManager:
             # Create translation processor
             self.processors[direction] = TranslationProcessor(
                 self.llm_services[direction], 
-                f"{self.config.language_b}→{self.config.language_a}"
+                f"{self.config.language_b}→{self.config.language_a}",
+                self.config.session_id
             )
             
             # Create pipeline B→A

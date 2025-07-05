@@ -1,58 +1,111 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
-import { Mic, MicOff, Volume2, VolumeX } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Mic, MicOff, Volume2, VolumeX, Play, Square } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { TranscriptionFeed } from '@/components/TranscriptionFeed'
 import { useSessionStore } from '@/stores/session'
+import { useStartSession, useStopSession } from '@/hooks/use-sessions'
 import { getLanguageName, getLanguageFlag, formatDate } from '@/lib/utils'
+import { toast } from 'sonner'
 import type { TranslationSession, ConnectionState } from '@/types'
 
 interface TranslationInterfaceProps {
   session: TranslationSession
   websocketConnection: ConnectionState
   dailyConnection: any // From useDaily hook
+  transcriptions: any[] // From WebSocket
+  currentUserId?: string
 }
 
 export function TranslationInterface({
   session,
   websocketConnection,
-  dailyConnection
+  dailyConnection,
+  transcriptions,
+  currentUserId
 }: TranslationInterfaceProps) {
   const { translations, isTranslating } = useSessionStore()
-  const messagesEndRef = useRef<HTMLDivElement>(null)
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }
-
-  useEffect(() => {
-    scrollToBottom()
-  }, [translations])
+  const [isTranslationActive, setIsTranslationActive] = useState(false)
+  
+  const startSessionMutation = useStartSession()
+  const stopSessionMutation = useStopSession()
 
   const isConnected = websocketConnection.status === 'connected' && 
                      dailyConnection.callState === 'joined'
 
+  const canStartTranslation = isConnected && session.user_b_id && 
+                             session.status !== 'active'
+
+  const handleStartTranslation = () => {
+    if (!canStartTranslation) {
+      toast.error('Please ensure both users are connected before starting translation')
+      return
+    }
+    
+    startSessionMutation.mutate(session.session_id, {
+      onSuccess: () => {
+        setIsTranslationActive(true)
+        toast.success('Translation started')
+      },
+      onError: (error) => {
+        toast.error('Failed to start translation')
+      }
+    })
+  }
+
+  const handleStopTranslation = () => {
+    stopSessionMutation.mutate(session.session_id, {
+      onSuccess: () => {
+        setIsTranslationActive(false)
+        toast.success('Translation stopped')
+      },
+      onError: (error) => {
+        toast.error('Failed to stop translation')
+      }
+    })
+  }
+
+  // Update local state when session status changes
+  useEffect(() => {
+    setIsTranslationActive(session.status === 'active')
+  }, [session.status])
+
   return (
     <div className="space-y-6">
-      {/* Audio Status */}
+      {/* Translation Controls */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center justify-between">
-            <span>Translation Active</span>
-            {isTranslating && (
-              <div className="flex items-center space-x-2">
-                <div className="audio-visualizer">
-                  <div className="audio-bar"></div>
-                  <div className="audio-bar"></div>
-                  <div className="audio-bar"></div>
-                  <div className="audio-bar"></div>
-                  <div className="audio-bar"></div>
-                </div>
-                <span className="text-sm text-green-600">Listening...</span>
-              </div>
-            )}
-          </CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle>Real-time Translation</CardTitle>
+            <div className="flex items-center space-x-2">
+              {isTranslationActive ? (
+                <Button
+                  variant="outline"
+                  onClick={handleStopTranslation}
+                  disabled={stopSessionMutation.isPending}
+                  className="text-red-600 border-red-200 hover:bg-red-50"
+                >
+                  <Square className="h-4 w-4 mr-2" />
+                  Stop Translation
+                </Button>
+              ) : (
+                <Button
+                  onClick={handleStartTranslation}
+                  disabled={!canStartTranslation || startSessionMutation.isPending}
+                  className="bg-green-600 hover:bg-green-700"
+                >
+                  <Play className="h-4 w-4 mr-2" />
+                  Start Translation
+                </Button>
+              )}
+              <Badge variant={isTranslationActive ? "default" : "secondary"}>
+                {isTranslationActive ? "Active" : "Inactive"}
+              </Badge>
+            </div>
+          </div>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 gap-4">
@@ -73,6 +126,13 @@ export function TranslationInterface({
                 ) : (
                   <MicOff className="h-5 w-5 text-red-500" />
                 )}
+                {isTranslationActive && dailyConnection.localAudio && (
+                  <div className="flex space-x-1">
+                    <div className="w-1 h-4 bg-green-500 rounded animate-pulse"></div>
+                    <div className="w-1 h-3 bg-green-400 rounded animate-pulse" style={{ animationDelay: '0.1s' }}></div>
+                    <div className="w-1 h-5 bg-green-500 rounded animate-pulse" style={{ animationDelay: '0.2s' }}></div>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -91,84 +151,57 @@ export function TranslationInterface({
               </div>
               <div className="flex items-center space-x-2">
                 <Volume2 className="h-5 w-5 text-blue-600" />
+                {session.user_b_id && (
+                  <Badge variant="outline" className="text-xs bg-green-50 text-green-700">
+                    Connected
+                  </Badge>
+                )}
               </div>
             </div>
           </div>
 
+          {/* Connection Status */}
           {!isConnected && (
-            <div className="mt-4 p-4 bg-yellow-50 rounded-lg text-center">
-              <p className="text-sm text-yellow-800">
-                {websocketConnection.status !== 'connected' 
-                  ? 'Connecting to translation service...'
-                  : 'Connecting to audio...'}
-              </p>
+            <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+              <div className="flex items-center space-x-2">
+                <div className="w-2 h-2 bg-yellow-500 rounded-full animate-pulse"></div>
+                <p className="text-sm text-yellow-800">
+                  {websocketConnection.status !== 'connected' 
+                    ? 'Connecting to translation service...'
+                    : dailyConnection.callState === 'joining'
+                    ? 'Connecting to audio...'
+                    : 'Waiting for audio connection...'}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Requirements Check */}
+          {!session.user_b_id && (
+            <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+              <div className="flex items-center space-x-2">
+                <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+                <p className="text-sm text-blue-800">
+                  Waiting for another user to join the session. Share your session to get started!
+                </p>
+              </div>
             </div>
           )}
         </CardContent>
       </Card>
 
-      {/* Translation History */}
-      <Card className="flex-1">
-        <CardHeader>
-          <CardTitle>Translation History</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="h-96 overflow-y-auto scrollbar-thin space-y-4 p-4 bg-gray-50 rounded-lg">
-            {translations.length === 0 ? (
-              <div className="text-center text-gray-500 py-12">
-                <Mic className="h-12 w-12 mx-auto mb-4 text-gray-300" />
-                <p className="text-lg font-medium mb-2">Ready to translate</p>
-                <p className="text-sm">
-                  Start speaking and see your translations appear here
-                </p>
-              </div>
-            ) : (
-              translations.map((translation, index) => (
-                <div
-                  key={translation.id}
-                  className={`translation-bubble ${
-                    translation.from_user_id === session.user_a_id ? 'user-a' : 'user-b'
-                  }`}
-                >
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs opacity-75">
-                        {getLanguageName(translation.original_language)}
-                      </span>
-                      <span className="text-xs opacity-75">
-                        {formatDate(translation.created_at)}
-                      </span>
-                    </div>
-                    <div className="font-medium">
-                      {translation.original_text}
-                    </div>
-                    <div className="border-t border-current/20 pt-2">
-                      <div className="text-xs opacity-75 mb-1">
-                        → {getLanguageName(translation.translated_language)}
-                      </div>
-                      <div className="italic">
-                        {translation.translated_text}
-                      </div>
-                    </div>
-                    {translation.confidence_score && (
-                      <div className="text-xs opacity-75">
-                        Confidence: {translation.confidence_score}%
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))
-            )}
-            <div ref={messagesEndRef} />
-          </div>
-        </CardContent>
-      </Card>
+      {/* Live Transcription Feed */}
+      <TranscriptionFeed 
+        transcriptions={transcriptions}
+        session={session}
+        currentUserId={currentUserId}
+      />
 
       {/* Help Text */}
-      {session.status === 'active' && isConnected && (
+      {isTranslationActive && isConnected && (
         <Card>
           <CardContent className="p-4">
-            <div className="flex items-center space-x-4 text-sm text-gray-600">
+            <div className="flex items-center space-x-6 text-sm text-gray-600">
               <div className="flex items-center space-x-2">
                 <Mic className="h-4 w-4" />
                 <span>Speak clearly into your microphone</span>
@@ -177,6 +210,27 @@ export function TranslationInterface({
                 <Volume2 className="h-4 w-4" />
                 <span>Listen to translations through your speakers</span>
               </div>
+              <div className="flex items-center space-x-2">
+                <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                <span>Translation is active</span>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Troubleshooting */}
+      {!isConnected && session.user_b_id && (
+        <Card>
+          <CardContent className="p-4">
+            <div className="text-sm text-gray-600">
+              <p className="font-medium mb-2">Troubleshooting connection issues:</p>
+              <ul className="list-disc list-inside space-y-1">
+                <li>Check your internet connection</li>
+                <li>Allow microphone access in your browser</li>
+                <li>Try refreshing the page</li>
+                <li>Check if other audio applications are using your microphone</li>
+              </ul>
             </div>
           </CardContent>
         </Card>

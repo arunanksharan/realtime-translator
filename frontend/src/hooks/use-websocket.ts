@@ -1,7 +1,10 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
+import { toast } from 'sonner'
 import { useSessionStore } from '@/stores/session'
 import { WS_BASE_URL, WEBSOCKET_RECONNECT_INTERVAL } from '@/lib/constants'
-import type { WebSocketMessage } from '@/types'
+import type { WebSocketMessage, TranscriptionMessage } from '@/types'
+
+type TranscriptionData = TranscriptionMessage['data']
 
 export function useWebSocket(sessionId: string | null) {
   const wsRef = useRef<WebSocket | null>(null)
@@ -12,6 +15,11 @@ export function useWebSocket(sessionId: string | null) {
     setSessionMetrics,
     setPipelineStatus 
   } = useSessionStore()
+
+  // Enhanced state for real-time features
+  const [transcriptions, setTranscriptions] = useState<TranscriptionData[]>([])
+  const [participants, setParticipants] = useState<string[]>([])
+  const [sessionStatus, setSessionStatus] = useState<string | null>(null)
 
   const connect = useCallback(() => {
     if (!sessionId) return
@@ -28,16 +36,30 @@ export function useWebSocket(sessionId: string | null) {
           retryCount: 0,
           lastConnected: new Date().toISOString()
         })
+        
+        // Send initial ping
+        ws.send('ping')
       }
 
       ws.onmessage = (event) => {
         try {
+          // Handle pong response
+          if (event.data === 'pong') {
+            return
+          }
+
           const message: WebSocketMessage = JSON.parse(event.data)
           
           switch (message.type) {
             case 'session_status':
               if (message.data?.pipeline_status) {
                 setPipelineStatus(message.data.pipeline_status)
+              }
+              if (message.data?.status) {
+                setSessionStatus(message.data.status)
+              }
+              if (message.data?.message) {
+                toast.info(message.data.message)
               }
               break
               
@@ -46,10 +68,42 @@ export function useWebSocket(sessionId: string | null) {
                 setSessionMetrics(message.data)
               }
               break
+
+            case 'transcription':
+              if (message.data) {
+                setTranscriptions(prev => [...prev, message.data as TranscriptionData])
+              }
+              break
+
+            case 'participant_joined':
+              if (message.data?.user_id) {
+                setParticipants(prev => [...prev, message.data.user_id])
+                toast.success(`User ${message.data.user_id} joined the session`)
+              }
+              break
+
+            case 'participant_left':
+              if (message.data?.user_id) {
+                setParticipants(prev => prev.filter(id => id !== message.data.user_id))
+                toast.info(`User ${message.data.user_id} left the session`)
+              }
+              break
+
+            case 'participants':
+              if (message.data && Array.isArray(message.data)) {
+                setParticipants(message.data.map(p => p.user_id || p))
+              }
+              break
               
             case 'error':
-              console.error('WebSocket error:', message.error)
+              console.error('WebSocket error:', message.error || message.data?.error_message)
+              if (message.data?.error_message) {
+                toast.error(message.data.error_message)
+              }
               break
+
+            default:
+              console.log('Unknown WebSocket message type:', message.type)
           }
         } catch (error) {
           console.error('Failed to parse WebSocket message:', error)
@@ -111,6 +165,14 @@ export function useWebSocket(sessionId: string | null) {
     sendMessage('get_metrics')
   }, [sendMessage])
 
+  const getParticipants = useCallback(() => {
+    sendMessage('get_participants')
+  }, [sendMessage])
+
+  const clearTranscriptions = useCallback(() => {
+    setTranscriptions([])
+  }, [])
+
   useEffect(() => {
     if (sessionId) {
       connect()
@@ -121,6 +183,17 @@ export function useWebSocket(sessionId: string | null) {
     }
   }, [sessionId, connect, disconnect])
 
+  // Periodic ping to keep connection alive
+  useEffect(() => {
+    if (websocketConnection.status === 'connected') {
+      const pingInterval = setInterval(() => {
+        ping()
+      }, 25000) // 25 seconds
+      
+      return () => clearInterval(pingInterval)
+    }
+  }, [websocketConnection.status, ping])
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -130,10 +203,15 @@ export function useWebSocket(sessionId: string | null) {
 
   return {
     connectionState: websocketConnection,
+    transcriptions,
+    participants,
+    sessionStatus,
     sendMessage,
     ping,
     getStatus,
     getMetrics,
+    getParticipants,
+    clearTranscriptions,
     connect,
     disconnect,
   }

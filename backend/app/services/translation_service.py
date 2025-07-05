@@ -4,6 +4,9 @@ Main translation service for managing sessions and coordinating pipelines
 import asyncio
 import uuid
 import logging
+import secrets
+import string
+import jwt
 from typing import Dict, Optional, List
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
@@ -13,7 +16,7 @@ from sqlalchemy import select, update, delete
 from sqlalchemy.orm import selectinload
 
 from app.models import TranslationSession, SessionStatus, User, SessionMetrics
-from app.services.pipeline_manager import DualPipelineManager, TranslationConfig
+from app.services.pipeline_manager_simple import DualPipelineManager, TranslationConfig
 from app.services.daily_service import DailyService
 from app.database import get_async_session
 from app.core.config import settings
@@ -151,6 +154,18 @@ class TranslationService:
             session.status = SessionStatus.WAITING
             await db.commit()
             
+            # Broadcast session status update
+            try:
+                from app.services.websocket_service import websocket_manager
+                await websocket_manager.broadcast_session_status(session_id, {
+                    "session_id": session_id,
+                    "status": SessionStatus.WAITING.value,
+                    "user_b_id": user_b_id,
+                    "message": f"User {user_b_id} joined the session"
+                })
+            except Exception as e:
+                logger.warning(f"Failed to broadcast session update: {e}")
+            
             logger.info(f"User B {user_b_id} joined session {session_id}")
             return True
             
@@ -206,6 +221,18 @@ class TranslationService:
                 session.status = SessionStatus.ACTIVE
                 session.started_at = datetime.now()
                 await db.commit()
+                
+                # Broadcast session status update
+                try:
+                    from app.services.websocket_service import websocket_manager
+                    await websocket_manager.broadcast_session_status(session_id, {
+                        "session_id": session_id,
+                        "status": SessionStatus.ACTIVE.value,
+                        "started_at": session.started_at.isoformat(),
+                        "message": "Translation started"
+                    })
+                except Exception as e:
+                    logger.warning(f"Failed to broadcast session update: {e}")
                 
                 # Initialize metrics
                 metrics = SessionMetrics(
@@ -521,6 +548,97 @@ class TranslationService:
                 "is_running": self.is_running,
                 "max_concurrent_sessions": settings.max_translation_sessions
             }
+
+    async def generate_invite_code(self, session_id: str) -> str:
+        """Generate a 6-digit invite code for session"""
+        
+        # Generate 6-digit alphanumeric code (excluding confusing characters)
+        alphabet = string.ascii_uppercase + string.digits
+        alphabet = alphabet.replace('0', '').replace('O', '').replace('I', '').replace('1')
+        invite_code = ''.join(secrets.choice(alphabet) for _ in range(6))
+        
+        # Store in database
+        async with get_async_session() as db:
+            session = await db.get(TranslationSession, session_id)
+            if not session:
+                raise ValueError(f"Session {session_id} not found")
+                
+            session.invite_code = invite_code
+            session.invite_expires_at = datetime.utcnow() + timedelta(hours=24)
+            await db.commit()
+            
+        logger.info(f"Generated invite code {invite_code} for session {session_id}")
+        return invite_code
+        
+    async def generate_share_token(self, session_id: str, expires_hours: int = 4) -> str:
+        """Generate a JWT share token for session"""
+        
+        payload = {
+            "session_id": session_id,
+            "type": "share_token",
+            "exp": datetime.utcnow() + timedelta(hours=expires_hours),
+            "iat": datetime.utcnow()
+        }
+        
+        token = jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
+        
+        # Store in database
+        async with get_async_session() as db:
+            session = await db.get(TranslationSession, session_id)
+            if not session:
+                raise ValueError(f"Session {session_id} not found")
+                
+            session.guest_access_token = token
+            await db.commit()
+            
+        logger.info(f"Generated share token for session {session_id}")
+        return token
+        
+    async def join_by_invite_code(self, invite_code: str, user_id: str) -> str:
+        """Join session using invite code"""
+        
+        async with get_async_session() as db:
+            stmt = select(TranslationSession).where(
+                TranslationSession.invite_code == invite_code,
+                TranslationSession.invite_expires_at > datetime.utcnow()
+            )
+            
+            result = await db.execute(stmt)
+            session = result.scalar_one_or_none()
+            
+            if not session:
+                raise ValueError("Invalid or expired invite code")
+                
+            if session.user_b_id:
+                raise ValueError("Session already has a second user")
+                
+            # Join the session
+            success = await self.join_session(session.id, user_id)
+            if not success:
+                raise ValueError("Failed to join session")
+                
+            return session.id
+            
+    async def validate_share_token(self, token: str) -> Optional[str]:
+        """Validate share token and return session ID"""
+        
+        try:
+            payload = jwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
+            session_id = payload.get("session_id")
+            
+            if not session_id or payload.get("type") != "share_token":
+                return None
+                
+            # Check if session exists and token matches
+            async with get_async_session() as db:
+                session = await db.get(TranslationSession, session_id)
+                if not session or session.guest_access_token != token:
+                    return None
+                    
+            return session_id
+            
+        except jwt.InvalidTokenError:
+            return None
 
 # Global service instance
 translation_service = TranslationService()

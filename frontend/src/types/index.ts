@@ -97,6 +97,7 @@ export interface SessionTokens {
 
 export interface SessionMetrics {
   session_id: string
+  session_status?: SessionStatus
   total_translations: number
   session_duration_ms: number
   avg_latency_ms?: number
@@ -114,9 +115,40 @@ export interface SessionListResponse {
 }
 
 export interface WebSocketMessage {
-  type: 'session_status' | 'session_metrics' | 'error' | 'pong'
+  type: 'session_status' | 'session_metrics' | 'transcription' | 'participant_joined' | 'participant_left' | 'participants' | 'error' | 'pong'
   data?: any
   error?: string
+}
+
+export interface TranscriptionMessage {
+  type: 'transcription'
+  data: {
+    session_id: string
+    speaker_id: string
+    original_text: string
+    translated_text: string
+    language_from: string
+    language_to: string
+    confidence: number
+    is_partial: boolean
+    timestamp: string
+  }
+}
+
+export interface ParticipantMessage {
+  type: 'participant_joined' | 'participant_left'
+  data: {
+    user_id: string
+    session_id: string
+  }
+}
+
+export interface ParticipantsListMessage {
+  type: 'participants'
+  data: Array<{
+    user_id: string
+    joined_at: string
+  }>
 }
 
 export interface HealthCheck {
@@ -191,4 +223,18 @@ export interface DailyCallState {
   localAudio: boolean
   localVideo: boolean
   networkQuality: 'good' | 'warning' | 'bad' | 'unknown'
+}
+
+export interface DailyHookReturn {
+  joinCall: () => Promise<void>
+  leaveCall: () => Promise<void>
+  toggleMicrophone: () => Promise<void>
+  setMicrophoneVolume: (volume: number) => Promise<void>
+  setSpeakerVolume: (volume: number) => Promise<void>
+  getNetworkStats: () => Promise<any | null>
+  callState: DailyCallState['callState']
+  participants: DailyCallState['participants']
+  localAudio: DailyCallState['localAudio']
+  localVideo: DailyCallState['localVideo']
+  networkQuality: DailyCallState['networkQuality']
 }

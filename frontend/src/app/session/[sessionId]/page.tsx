@@ -10,9 +10,11 @@ import { Card, CardContent } from '@/components/ui/card'
 import { TranslationInterface } from '@/components/TranslationInterface'
 import { SessionStatus } from '@/components/SessionStatus'
 import { ConnectionIndicator } from '@/components/ConnectionIndicator'
+import { AudioControlsCard } from '@/components/AudioControlsCard'
+import { SessionSharingPanel } from '@/components/SessionSharingPanel'
 import { useAuthStore } from '@/stores/auth'
 import { useSessionStore } from '@/stores/session'
-import { useSession, useSessionTokens } from '@/hooks/use-sessions'
+import { useSession, useSessionTokens, usePublicSession } from '@/hooks/use-sessions'
 import { useWebSocket } from '@/hooks/use-websocket'
 import { useDaily } from '@/hooks/use-daily'
 import { formatDate, getLanguageName, getLanguageFlag } from '@/lib/utils'
@@ -31,20 +33,22 @@ export default function SessionPage() {
     showSettings 
   } = useSessionStore()
 
-  // Fetch session data
-  const { data: session, isLoading: sessionLoading } = useSession(sessionId)
-  const { data: sessionTokens } = useSessionTokens(sessionId)
-
-  // WebSocket connection for real-time updates
-  const websocket = useWebSocket(sessionId)
+  // Fetch session data - use public endpoint if not authenticated
+  const { data: session, isLoading: sessionLoading, error: sessionError } = isAuthenticated 
+    ? useSession(sessionId)
+    : usePublicSession(sessionId)
   
-  // Daily.co integration for audio
+  const { data: sessionTokens, error: tokensError } = useSessionTokens(sessionId)
+
+  // RE-ENABLE WebSocket and Daily connections
+  const websocket = useWebSocket(sessionId)
   const daily = useDaily(sessionTokens || null)
 
   useEffect(() => {
+    // Allow unauthenticated users to view sessions via shared links
+    // They can see the session but won't be able to join without auth
     if (!isAuthenticated) {
-      router.push('/auth/login')
-      return
+      console.log('User not authenticated - showing public session view')
     }
   }, [isAuthenticated, router])
 
@@ -54,9 +58,10 @@ export default function SessionPage() {
     }
   }, [session, setCurrentSession])
 
-  if (!isAuthenticated) {
-    return null
-  }
+  // Don't block unauthenticated users - they can view public sessions
+  // if (!isAuthenticated) {
+  //   return null
+  // }
 
   if (sessionLoading) {
     return (
@@ -69,19 +74,44 @@ export default function SessionPage() {
     )
   }
 
-  if (!session) {
+  if (sessionError || !session) {
+    const statusCode = sessionError?.response?.status
+    const is404 = statusCode === 404
+    const isNetworkError = sessionError?.code === 'ECONNABORTED' || sessionError?.code === 'NETWORK_ERROR'
+    
     return (
       <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
         <Card className="w-full max-w-md">
           <CardContent className="p-8 text-center">
-            <h2 className="text-xl font-semibold mb-2">Session Not Found</h2>
+            <h2 className="text-xl font-semibold mb-2">
+              {is404 ? 'Session Not Found' : 'Connection Error'}
+            </h2>
             <p className="text-gray-600 mb-4">
-              The translation session you're looking for doesn't exist or has expired.
+              {is404 
+                ? "The translation session you're looking for doesn't exist or has expired."
+                : isNetworkError 
+                  ? "Unable to connect to the server. Please check your internet connection."
+                  : "An error occurred while loading the session. Please try again."
+              }
             </p>
-            <Button onClick={() => router.push('/dashboard')}>
-              <ArrowLeft className="h-4 w-4 mr-2" />
-              Back to Dashboard
-            </Button>
+            <div className="flex space-x-2">
+              <Button 
+                variant="outline" 
+                onClick={() => router.push('/dashboard')}
+                className="flex-1"
+              >
+                <ArrowLeft className="h-4 w-4 mr-2" />
+                Back to Dashboard
+              </Button>
+              {!is404 && (
+                <Button 
+                  onClick={() => window.location.reload()}
+                  className="flex-1"
+                >
+                  Try Again
+                </Button>
+              )}
+            </div>
           </CardContent>
         </Card>
       </div>
@@ -158,16 +188,17 @@ export default function SessionPage() {
               </div>
 
               {/* Share Session */}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  navigator.clipboard.writeText(window.location.href)
-                  toast.success('Session URL copied to clipboard!')
-                }}
-              >
-                Share Session
-              </Button>
+              <SessionSharingPanel session={session} />
+
+              {/* Join Session for unauthenticated users */}
+              {!isAuthenticated && (
+                <Button
+                  size="sm"
+                  onClick={() => router.push('/auth/login')}
+                >
+                  Join Session
+                </Button>
+              )}
 
               {/* Settings */}
               <Button
@@ -186,8 +217,9 @@ export default function SessionPage() {
       <main className="container mx-auto px-4 py-6">
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
           {/* Session Status */}
-          <div className="lg:col-span-1">
+          <div className="lg:col-span-1 space-y-4">
             <SessionStatus session={session} />
+            <AudioControlsCard daily={daily} />
           </div>
 
           {/* Translation Interface */}
@@ -196,6 +228,8 @@ export default function SessionPage() {
               session={session}
               websocketConnection={websocket.connectionState}
               dailyConnection={daily}
+              transcriptions={websocket.transcriptions}
+              currentUserId={session.user_a_id} // Assuming current user is always user A for now
             />
           </div>
         </div>

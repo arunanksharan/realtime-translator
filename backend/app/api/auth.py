@@ -3,7 +3,7 @@ Authentication API routes
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime, timedelta
 
@@ -16,14 +16,14 @@ router = APIRouter(prefix="/auth", tags=["authentication"])
 security_scheme = HTTPBearer()
 
 class UserRegisterRequest(BaseModel):
-    email: EmailStr = Field(..., description="User email address")
+    email: str = Field(..., description="User email address")
     username: str = Field(..., min_length=3, max_length=50, description="Username")
     password: str = Field(..., min_length=8, description="Password")
     full_name: Optional[str] = Field(None, description="Full name")
     preferred_language: Optional[str] = Field(None, description="Preferred language code")
 
 class UserLoginRequest(BaseModel):
-    email: EmailStr = Field(..., description="User email address")
+    email: str = Field(..., description="User email address")
     password: str = Field(..., description="Password")
 
 class TokenResponse(BaseModel):

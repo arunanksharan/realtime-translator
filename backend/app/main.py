@@ -15,6 +15,7 @@ import uvicorn
 from app.core.config import settings
 from app.database import create_tables
 from app.services.translation_service import translation_service
+from app.services.websocket_service import websocket_manager
 from app.api.auth import router as auth_router
 from app.api.sessions import router as sessions_router
 
@@ -159,8 +160,6 @@ async def root():
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     """WebSocket endpoint for real-time session updates"""
     
-    await websocket.accept()
-    
     try:
         # Verify session exists
         session_status = await translation_service.get_session_status(session_id)
@@ -168,17 +167,23 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
             await websocket.close(code=4004, reason="Session not found")
             return
         
+        # Connect to WebSocket manager
+        await websocket_manager.connect(websocket, session_id)
+        
         # Send initial status
         await websocket.send_json({
             "type": "session_status",
             "data": session_status
         })
         
-        # Keep connection alive and send periodic updates
+        # Keep connection alive and handle messages
         while True:
             try:
                 # Wait for messages or timeout
                 message = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                
+                # Update ping time
+                await websocket_manager.ping_connection(websocket)
                 
                 # Handle different message types
                 if message == "ping":
@@ -194,6 +199,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     await websocket.send_json({
                         "type": "session_metrics",
                         "data": metrics
+                    })
+                elif message == "get_participants":
+                    participants = await websocket_manager.get_session_participants(session_id)
+                    await websocket.send_json({
+                        "type": "participants",
+                        "data": participants
                     })
                     
             except asyncio.TimeoutError:
@@ -215,6 +226,9 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     except Exception as e:
         logger.error(f"WebSocket error for session {session_id}: {e}")
         await websocket.close(code=4000, reason="Internal server error")
+    finally:
+        # Clean up connection
+        await websocket_manager.disconnect(websocket)
 
 # Custom OpenAPI schema
 def custom_openapi():

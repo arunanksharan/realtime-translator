@@ -1,12 +1,12 @@
 import { useEffect, useRef, useCallback } from 'react'
-import DailyIframe from '@daily-co/daily-js'
+import DailyIframe, { DailyCall, DailyEvent, DailyEventObject } from '@daily-co/daily-js'
 import { useSessionStore } from '@/stores/session'
 import { useSettingsStore } from '@/stores/settings'
 import { toast } from 'sonner'
-import type { SessionTokens } from '@/types'
+import type { SessionTokens, DailyHookReturn } from '@/types'
 
-export function useDaily(sessionTokens: SessionTokens | null) {
-  const callRef = useRef<DailyIframe | null>(null)
+export function useDaily(sessionTokens: SessionTokens | null): DailyHookReturn {
+  const callRef = useRef<DailyCall | null>(null)
   const { setDailyConnection, dailyConnection } = useSessionStore()
   const { audio: audioSettings } = useSettingsStore()
 
@@ -41,29 +41,30 @@ export function useDaily(sessionTokens: SessionTokens | null) {
         toast.info('Left translation room')
       })
 
-      call.on('error', (error) => {
-        console.error('Daily call error:', error)
+      call.on('error', (event: DailyEventObject) => {
+        console.error('Daily call error:', event)
         setDailyConnection({ callState: 'error' })
-        toast.error('Connection error: ' + error.errorMsg)
+        const errorMsg = typeof event.errorMsg === 'string' ? event.errorMsg : 'Unknown error'
+        toast.error('Connection error: ' + errorMsg)
       })
 
-      call.on('participant-joined', (event) => {
+      call.on('participant-joined', () => {
         const participants = call.participants()
         setDailyConnection({ participants })
       })
 
-      call.on('participant-left', (event) => {
+      call.on('participant-left', () => {
         const participants = call.participants()
         setDailyConnection({ participants })
       })
 
-      call.on('participant-updated', (event) => {
+      call.on('participant-updated', () => {
         const participants = call.participants()
         setDailyConnection({ participants })
       })
 
-      call.on('network-quality-change', (event) => {
-        const { quality } = event
+      call.on('network-quality-change', (event: DailyEventObject) => {
+        const quality = event.threshold
         setDailyConnection({ 
           networkQuality: quality === 'good' ? 'good' : 
                          quality === 'low' ? 'warning' : 'bad' 
@@ -113,36 +114,20 @@ export function useDaily(sessionTokens: SessionTokens | null) {
       console.error('Failed to toggle microphone:', error)
       toast.error('Failed to toggle microphone')
     }
-  }, [callRef, dailyConnection.localAudio, setDailyConnection])
+  }, [dailyConnection.localAudio, setDailyConnection])
 
   const setMicrophoneVolume = useCallback(async (volume: number) => {
-    if (!callRef.current) return
-
-    try {
-      await callRef.current.setInputDevicesAsync({
-        audioSource: {
-          deviceId: 'default',
-          volume: volume / 100, // Convert to 0-1 range
-        }
-      })
-    } catch (error) {
-      console.error('Failed to set microphone volume:', error)
-    }
+    // Note: Daily.co doesn't provide direct volume control via API
+    // Volume control is typically handled by the browser or OS
+    console.log('Microphone volume requested:', volume)
+    // This would need to be implemented using Web Audio API or similar
   }, [])
 
   const setSpeakerVolume = useCallback(async (volume: number) => {
-    if (!callRef.current) return
-
-    try {
-      await callRef.current.setOutputDevicesAsync({
-        audioOutput: {
-          deviceId: 'default',
-          volume: volume / 100, // Convert to 0-1 range
-        }
-      })
-    } catch (error) {
-      console.error('Failed to set speaker volume:', error)
-    }
+    // Note: Daily.co doesn't provide direct volume control via API
+    // Volume control is typically handled by the browser or OS
+    console.log('Speaker volume requested:', volume)
+    // This would need to be implemented using Web Audio API or similar
   }, [])
 
   const getNetworkStats = useCallback(async () => {
@@ -166,11 +151,11 @@ export function useDaily(sessionTokens: SessionTokens | null) {
 
   // Apply audio settings
   useEffect(() => {
-    if (callRef.current) {
-      setMicrophoneVolume(audioSettings.micVolume)
-      setSpeakerVolume(audioSettings.speakerVolume)
+    if (callRef.current && audioSettings) {
+      // Apply settings when available
+      // Note: Volume control would be implemented here if supported
     }
-  }, [audioSettings.micVolume, audioSettings.speakerVolume, setMicrophoneVolume, setSpeakerVolume])
+  }, [audioSettings?.micVolume, audioSettings?.speakerVolume])
 
   // Cleanup on unmount
   useEffect(() => {
@@ -189,6 +174,7 @@ export function useDaily(sessionTokens: SessionTokens | null) {
     callState: dailyConnection.callState,
     participants: dailyConnection.participants,
     localAudio: dailyConnection.localAudio,
+    localVideo: dailyConnection.localVideo,
     networkQuality: dailyConnection.networkQuality,
   }
 }

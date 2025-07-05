@@ -61,6 +61,13 @@ class TranslationSession(Base):
     session_config = Column(Text, nullable=True)  # JSON config
     error_message = Column(Text, nullable=True)
     
+    # Session sharing
+    invite_code = Column(String(6), nullable=True)  # 6-digit invite code
+    invite_expires_at = Column(DateTime, nullable=True)
+    guest_access_token = Column(Text, nullable=True)  # JWT token for guest access
+    allow_guest_access = Column(Boolean, default=True)
+    max_participants = Column(Integer, default=2)
+    
     # Relationships
     user_a = relationship("User", foreign_keys=[user_a_id], back_populates="sessions_as_user_a")
     user_b = relationship("User", foreign_keys=[user_b_id], back_populates="sessions_as_user_b")

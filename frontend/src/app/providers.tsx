@@ -19,7 +19,8 @@ export function Providers({ children }: ProvidersProps) {
             gcTime: 1000 * 60 * 5, // 5 minutes (formerly cacheTime)
             retry: (failureCount, error: any) => {
               // Don't retry on 4xx errors (except 401, which is handled by interceptor)
-              if (error?.response?.status >= 400 && error?.response?.status < 500) {
+              const statusCode = error?.response?.status
+              if (statusCode && statusCode >= 400 && statusCode < 500) {
                 return false
               }
               return failureCount < 3

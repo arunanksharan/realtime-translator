@@ -23,6 +23,20 @@ class CreateSessionRequest(BaseModel):
 class JoinSessionRequest(BaseModel):
     session_id: str = Field(..., description="Session ID to join")
 
+class JoinByCodeRequest(BaseModel):
+    invite_code: str = Field(..., description="6-digit invite code")
+
+class ShareLinkRequest(BaseModel):
+    expires_hours: int = Field(default=4, description="Hours until share link expires")
+
+class InviteCodeResponse(BaseModel):
+    invite_code: str
+    expires_at: str
+
+class ShareLinkResponse(BaseModel):
+    share_link: str
+    expires_at: str
+
 class SessionResponse(BaseModel):
     session_id: str
     status: str
@@ -103,6 +117,144 @@ async def create_session(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Failed to create session: {str(e)}"
+        )
+
+@router.post("/{session_id}/invite-code", response_model=InviteCodeResponse)
+async def generate_invite_code(
+    session_id: str,
+    current_user: str = Depends(get_current_user)
+):
+    """Generate 6-digit invite code for session"""
+    
+    try:
+        # Verify user owns this session
+        session_status = await translation_service.get_session_status(session_id)
+        if not session_status:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Session not found"
+            )
+            
+        if session_status["user_a_id"] != current_user:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only session owner can generate invite codes"
+            )
+            
+        invite_code = await translation_service.generate_invite_code(session_id)
+        expires_at = datetime.utcnow() + timedelta(hours=24)
+        
+        return InviteCodeResponse(
+            invite_code=invite_code,
+            expires_at=expires_at.isoformat()
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate invite code: {str(e)}"
+        )
+
+@router.post("/{session_id}/share-link", response_model=ShareLinkResponse)
+async def generate_share_link(
+    session_id: str,
+    request: ShareLinkRequest = ShareLinkRequest(),
+    current_user: str = Depends(get_current_user)
+):
+    """Generate shareable link for session"""
+    
+    try:
+        # Verify user owns this session
+        session_status = await translation_service.get_session_status(session_id)
+        if not session_status:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Session not found"
+            )
+            
+        if session_status["user_a_id"] != current_user:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only session owner can generate share links"
+            )
+            
+        share_token = await translation_service.generate_share_token(session_id, request.expires_hours)
+        share_link = f"http://localhost:3000/session/{session_id}?token={share_token}"
+        expires_at = datetime.utcnow() + timedelta(hours=request.expires_hours)
+        
+        return ShareLinkResponse(
+            share_link=share_link,
+            expires_at=expires_at.isoformat()
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate share link: {str(e)}"
+        )
+
+@router.post("/join-by-code", response_model=dict)
+async def join_session_by_code(
+    request: JoinByCodeRequest,
+    current_user: str = Depends(get_current_user)
+):
+    """Join session using 6-digit invite code"""
+    
+    try:
+        session_id = await translation_service.join_by_invite_code(
+            request.invite_code,
+            current_user
+        )
+        
+        return {
+            "message": "Successfully joined session",
+            "session_id": session_id
+        }
+        
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal error: {str(e)}"
+        )
+@router.post("/{session_id}/join", response_model=dict)
+async def join_session_by_id(
+    session_id: str,
+    current_user: str = Depends(get_current_user)
+):
+    """Join an existing translation session as user B (by session ID in URL)"""
+    
+    try:
+        success = await translation_service.join_session(
+            session_id=session_id,
+            user_b_id=current_user
+        )
+        
+        if success:
+            return {"message": "Successfully joined session", "session_id": session_id}
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Failed to join session"
+            )
+            
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal error: {str(e)}"
         )
 
 @router.post("/join", response_model=dict)
@@ -217,6 +369,68 @@ async def stop_session(
             detail=f"Internal error: {str(e)}"
         )
 
+@router.get("/public/{session_id}", response_model=SessionResponse)
+async def get_public_session(session_id: str):
+    """Get session details for public access (joining via shared link)"""
+    
+    try:
+        session_status = await translation_service.get_session_status(session_id)
+        
+        if not session_status:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Session not found"
+            )
+            
+        # Allow public access to session info for joining
+        # Remove sensitive info for public access
+        public_session = session_status.copy()
+        public_session.pop('user_a_id', None)
+        public_session.pop('user_b_id', None)
+            
+        return SessionResponse(**session_status)  # Return full data for now
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal error: {str(e)}"
+        )
+
+@router.get("/{session_id}", response_model=SessionResponse)
+async def get_session(
+    session_id: str,
+    current_user: str = Depends(get_current_user)
+):
+    """Get session details by ID"""
+    
+    try:
+        session_status = await translation_service.get_session_status(session_id)
+        
+        if not session_status:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Session not found"
+            )
+            
+        # Check authorization
+        if current_user not in [session_status["user_a_id"], session_status.get("user_b_id")]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized for this session"
+            )
+            
+        return SessionResponse(**session_status)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal error: {str(e)}"
+        )
+
 @router.get("/{session_id}/status", response_model=SessionResponse)
 async def get_session_status(
     session_id: str,
@@ -245,6 +459,39 @@ async def get_session_status(
     except HTTPException:
         raise
     except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal error: {str(e)}"
+        )
+
+@router.get("/{session_id}/tokens", response_model=TokenResponse)
+async def get_session_tokens(
+    session_id: str,
+    current_user: str = Depends(get_current_user)
+):
+    """Get Daily.co room token for joining session"""
+    
+    try:
+        # ADD DEBUG LOGGING
+        print(f"🔍 Getting tokens for session: {session_id}, user: {current_user}")
+        
+        token_data = await translation_service.get_user_tokens(session_id, current_user)
+        
+        print(f"✅ Token data retrieved: {token_data}")
+        return TokenResponse(**token_data)
+        
+    except ValueError as e:
+        print(f"❌ ValueError in get_user_tokens: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(e)
+        )
+    except Exception as e:
+        print(f"❌ Exception in get_user_tokens: {str(e)}")
+        print(f"📍 Exception type: {type(e).__name__}")
+        import traceback
+        print(f"📍 Traceback: {traceback.format_exc()}")
+        
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal error: {str(e)}"

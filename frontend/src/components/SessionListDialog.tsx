@@ -123,7 +123,7 @@ export function SessionListDialog() {
                             </span>
                             <span className="flex items-center space-x-1">
                               <Users className="h-3 w-3" />
-                              <span>{session.participants?.length || 0} joined</span>
+                              <span>{session.user_b_id ? 2 : 1} joined</span>
                             </span>
                           </div>
                         </div>

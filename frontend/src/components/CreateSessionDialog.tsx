@@ -51,13 +51,21 @@ export function CreateSessionDialog({ open, onOpenChange, onSuccess }: CreateSes
     handleSubmit,
     formState: { errors, isValid },
     reset,
+    trigger,
   } = useForm<CreateSessionForm>({
     resolver: zodResolver(createSessionSchema),
     mode: 'onChange',
+    defaultValues: {
+      language_a: '',
+      language_b: '',
+    },
   })
 
   const language_a = watch('language_a')
   const language_b = watch('language_b')
+
+  // Custom validation check
+  const isFormValid = language_a && language_b && language_a !== language_b
 
   const onSubmit = (data: CreateSessionForm) => {
     createMutation.mutate(data, {
@@ -77,6 +85,16 @@ export function CreateSessionDialog({ open, onOpenChange, onSuccess }: CreateSes
     reset()
   }
 
+  const handleLanguageAChange = (value: string) => {
+    setValue('language_a', value)
+    trigger('language_a') // Trigger validation
+  }
+
+  const handleLanguageBChange = (value: string) => {
+    setValue('language_b', value)
+    trigger('language_b') // Trigger validation
+  }
+
   return (
     <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent className="sm:max-w-md">
@@ -91,7 +109,7 @@ export function CreateSessionDialog({ open, onOpenChange, onSuccess }: CreateSes
           <div className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="language_a">Your Language</Label>
-              <Select onValueChange={(value) => setValue('language_a', value)}>
+              <Select onValueChange={handleLanguageAChange} value={language_a}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select your language" />
                 </SelectTrigger>
@@ -119,7 +137,7 @@ export function CreateSessionDialog({ open, onOpenChange, onSuccess }: CreateSes
 
             <div className="space-y-2">
               <Label htmlFor="language_b">Other Person's Language</Label>
-              <Select onValueChange={(value) => setValue('language_b', value)}>
+              <Select onValueChange={handleLanguageBChange} value={language_b}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select their language" />
                 </SelectTrigger>
@@ -173,7 +191,7 @@ export function CreateSessionDialog({ open, onOpenChange, onSuccess }: CreateSes
             <Button 
               type="submit" 
               className="flex-1"
-              disabled={!isValid || createMutation.isPending}
+              disabled={!isFormValid || createMutation.isPending}
             >
               {createMutation.isPending ? (
                 <>
