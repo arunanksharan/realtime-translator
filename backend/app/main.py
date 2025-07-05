@@ -1,0 +1,324 @@
+"""
+Main FastAPI application
+"""
+import logging
+import asyncio
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.openapi.utils import get_openapi
+import uvicorn
+
+from app.core.config import settings
+from app.database import create_tables
+from app.services.translation_service import translation_service
+from app.api.auth import router as auth_router
+from app.api.sessions import router as sessions_router
+
+# Configure logging
+logging.basicConfig(
+    level=getattr(logging, settings.log_level.upper()),
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan management"""
+    
+    # Startup
+    logger.info("Starting Realtime Translator API")
+    
+    try:
+        # Create database tables
+        await create_tables()
+        logger.info("Database tables created/verified")
+        
+        # Start translation service
+        await translation_service.start()
+        logger.info("Translation service started")
+        
+        yield
+        
+    except Exception as e:
+        logger.error(f"Startup error: {e}")
+        raise
+    finally:
+        # Shutdown
+        logger.info("Shutting down Realtime Translator API")
+        
+        try:
+            # Stop translation service
+            await translation_service.stop()
+            logger.info("Translation service stopped")
+            
+        except Exception as e:
+            logger.error(f"Shutdown error: {e}")
+
+# Create FastAPI app
+app = FastAPI(
+    title="Realtime Language Translator",
+    description="Production-grade real-time bidirectional language translator API",
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url="/docs" if settings.debug else None,
+    redoc_url="/redoc" if settings.debug else None,
+    openapi_url="/openapi.json" if settings.debug else None,
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Add trusted host middleware
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["*"] if settings.debug else ["localhost", "127.0.0.1"]
+)
+
+# Include routers
+app.include_router(auth_router, prefix="/api/v1")
+app.include_router(sessions_router, prefix="/api/v1")
+
+# Global exception handler
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Global exception handler"""
+    logger.error(f"Global exception: {exc}", exc_info=True)
+    
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "Internal server error",
+            "message": "An unexpected error occurred" if not settings.debug else str(exc)
+        }
+    )
+
+# Health check endpoints
+@app.get("/health", tags=["health"])
+async def health_check():
+    """Basic health check"""
+    return {"status": "healthy", "service": "realtime-translator"}
+
+@app.get("/health/detailed", tags=["health"])
+async def detailed_health_check():
+    """Detailed health check including dependencies"""
+    
+    try:
+        health_status = await translation_service.health_check()
+        
+        return {
+            "status": "healthy" if health_status["service_healthy"] else "unhealthy",
+            "service": "realtime-translator",
+            "details": health_status
+        }
+        
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return {
+            "status": "unhealthy",
+            "service": "realtime-translator",
+            "error": str(e)
+        }
+
+# Service statistics endpoint
+@app.get("/stats", tags=["monitoring"])
+async def get_service_stats():
+    """Get service statistics"""
+    
+    try:
+        stats = await translation_service.get_service_stats()
+        return stats
+        
+    except Exception as e:
+        logger.error(f"Failed to get service stats: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get service statistics")
+
+# Root endpoint
+@app.get("/", tags=["root"])
+async def root():
+    """Root endpoint"""
+    return {
+        "message": "Realtime Language Translator API",
+        "version": "1.0.0",
+        "docs": "/docs" if settings.debug else None,
+        "health": "/health",
+        "api_prefix": "/api/v1"
+    }
+
+# WebSocket endpoint for real-time updates
+@app.websocket("/ws/{session_id}")
+async def websocket_endpoint(websocket: WebSocket, session_id: str):
+    """WebSocket endpoint for real-time session updates"""
+    
+    await websocket.accept()
+    
+    try:
+        # Verify session exists
+        session_status = await translation_service.get_session_status(session_id)
+        if not session_status:
+            await websocket.close(code=4004, reason="Session not found")
+            return
+        
+        # Send initial status
+        await websocket.send_json({
+            "type": "session_status",
+            "data": session_status
+        })
+        
+        # Keep connection alive and send periodic updates
+        while True:
+            try:
+                # Wait for messages or timeout
+                message = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                
+                # Handle different message types
+                if message == "ping":
+                    await websocket.send_text("pong")
+                elif message == "get_status":
+                    current_status = await translation_service.get_session_status(session_id)
+                    await websocket.send_json({
+                        "type": "session_status",
+                        "data": current_status
+                    })
+                elif message == "get_metrics":
+                    metrics = await translation_service.get_session_metrics(session_id)
+                    await websocket.send_json({
+                        "type": "session_metrics",
+                        "data": metrics
+                    })
+                    
+            except asyncio.TimeoutError:
+                # Send periodic status updates
+                current_status = await translation_service.get_session_status(session_id)
+                if current_status:
+                    await websocket.send_json({
+                        "type": "session_status",
+                        "data": current_status
+                    })
+                else:
+                    await websocket.close(code=4004, reason="Session no longer exists")
+                    break
+                    
+            except WebSocketDisconnect:
+                logger.info(f"WebSocket disconnected for session {session_id}")
+                break
+                
+    except Exception as e:
+        logger.error(f"WebSocket error for session {session_id}: {e}")
+        await websocket.close(code=4000, reason="Internal server error")
+
+# Custom OpenAPI schema
+def custom_openapi():
+    """Custom OpenAPI schema with additional information"""
+    if app.openapi_schema:
+        return app.openapi_schema
+    
+    openapi_schema = get_openapi(
+        title="Realtime Language Translator API",
+        version="1.0.0",
+        description="""
+        ## Real-time Bidirectional Language Translation API
+        
+        This API provides real-time bidirectional translation between users speaking different languages.
+        
+        ### Features:
+        - **Real-time Translation**: Uses Google Gemini Multimodal Live API for instant translation
+        - **Bidirectional**: Supports simultaneous translation in both directions
+        - **WebRTC Audio**: High-quality audio streaming via Daily.co
+        - **Session Management**: Complete session lifecycle management
+        - **Authentication**: JWT-based authentication system
+        - **Monitoring**: Health checks and metrics endpoints
+        
+        ### Architecture:
+        - **Dual Pipeline System**: Separate translation pipelines for each direction
+        - **Audio Isolation**: Prevents feedback and ensures clean audio routing
+        - **Production Ready**: Scalable architecture with proper error handling
+        
+        ### Supported Languages:
+        - English (en)
+        - Spanish (es)
+        - French (fr)
+        - German (de)
+        - Italian (it)
+        - Portuguese (pt)
+        - Japanese (ja)
+        - Korean (ko)
+        - Chinese (zh)
+        - And many more...
+        
+        ### Usage Flow:
+        1. **Register/Login** - Create account and get JWT token
+        2. **Create Session** - Create translation session with language pair
+        3. **Join Session** - Second user joins the session
+        4. **Start Translation** - Begin real-time translation
+        5. **Get Tokens** - Get Daily.co room tokens for WebRTC connection
+        6. **Connect Audio** - Users connect to Daily.co room for audio
+        7. **Translate** - Real-time bidirectional translation begins
+        8. **Stop Session** - End translation session
+        
+        ### WebSocket Updates:
+        Connect to `/ws/{session_id}` for real-time session status updates.
+        """,
+        routes=app.routes,
+    )
+    
+    # Add custom tags
+    openapi_schema["tags"] = [
+        {
+            "name": "authentication",
+            "description": "User authentication and authorization"
+        },
+        {
+            "name": "sessions",
+            "description": "Translation session management"
+        },
+        {
+            "name": "health",
+            "description": "Health check and monitoring endpoints"
+        },
+        {
+            "name": "monitoring",
+            "description": "Service monitoring and statistics"
+        },
+        {
+            "name": "root",
+            "description": "Root and information endpoints"
+        }
+    ]
+    
+    # Add server information
+    openapi_schema["servers"] = [
+        {
+            "url": "http://localhost:8000",
+            "description": "Development server"
+        },
+        {
+            "url": "https://api.translator.example.com",
+            "description": "Production server"
+        }
+    ]
+    
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+app.openapi = custom_openapi
+
+# Development server
+if __name__ == "__main__":
+    uvicorn.run(
+        "app.main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=settings.debug,
+        log_level=settings.log_level.lower(),
+        access_log=settings.debug
+    )
