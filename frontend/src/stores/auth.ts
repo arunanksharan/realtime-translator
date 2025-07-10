@@ -25,6 +25,12 @@ export const useAuthStore = create<AuthState>()(
       isLoading: false,
 
       setAuth: (user: User, tokens: AuthTokens) => {
+        // Store in both places for consistency
+        localStorage.setItem(STORAGE_KEYS.ACCESS_TOKEN, tokens.access_token)
+        if (tokens.refresh_token) {
+          localStorage.setItem(STORAGE_KEYS.REFRESH_TOKEN, tokens.refresh_token)
+        }
+        
         set({
           user,
           tokens,
@@ -34,6 +40,10 @@ export const useAuthStore = create<AuthState>()(
       },
 
       clearAuth: () => {
+        // Clear both places
+        localStorage.removeItem(STORAGE_KEYS.ACCESS_TOKEN)
+        localStorage.removeItem(STORAGE_KEYS.REFRESH_TOKEN)
+        
         set({
           user: null,
           tokens: null,

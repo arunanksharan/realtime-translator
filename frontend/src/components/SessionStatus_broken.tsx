@@ -1,13 +1,12 @@
 'use client'
 
-import { Users, Clock, AlertCircle, CheckCircle, Loader2, Share2, Copy } from 'lucide-react'
+import { Users, Clock, AlertCircle, CheckCircle, Loader2 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { useStartSession, useStopSession, useJoinSession } from '@/hooks/use-sessions'
+import { useStartSession, useStopSession } from '@/hooks/use-sessions'
 import { useSessionStore } from '@/stores/session'
 import { formatDate } from '@/lib/utils'
 import { SESSION_STATUS_COLORS, SESSION_STATUS_LABELS } from '@/lib/constants'
-import { toast } from 'sonner'
 import type { TranslationSession } from '@/types'
 
 interface SessionStatusProps {
@@ -18,14 +17,12 @@ export function SessionStatus({ session }: SessionStatusProps) {
   const { isTranslating } = useSessionStore()
   const startMutation = useStartSession()
   const stopMutation = useStopSession()
-  const joinMutation = useJoinSession()
 
   const statusColor = SESSION_STATUS_COLORS[session.status]
   const statusLabel = SESSION_STATUS_LABELS[session.status]
 
   const canStart = session.status === 'waiting' && session.user_b_id
   const canStop = session.status === 'active'
-  const canJoin = !session.user_b_id // Can join if no User B yet
 
   const handleStart = () => {
     startMutation.mutate(session.session_id)
@@ -33,106 +30,6 @@ export function SessionStatus({ session }: SessionStatusProps) {
 
   const handleStop = () => {
     stopMutation.mutate(session.session_id)
-  }
-
-  const handleJoin = async () => {
-    try {
-      console.log('🚀 Attempting to join as User B...')
-      await joinMutation.mutateAsync(session.session_id)
-      toast.success('Successfully joined as User B!')
-      window.location.reload() // Refresh to update session data
-    } catch (error: any) {
-      console.error('❌ Join failed:', error)
-      
-      const statusCode = error?.response?.status
-      if (statusCode === 401 || statusCode === 403) {
-        toast.error('Please log in to join this session')
-        // Redirect to login with return URL
-        const returnUrl = encodeURIComponent(window.location.href)
-        window.location.href = `/auth/login?returnUrl=${returnUrl}`
-      } else {
-        toast.error(`Failed to join session: ${error.message || 'Unknown error'}`)
-      }
-    }
-  }
-
-  const handleCopyUrl = async () => {
-    try {
-      console.log('📋 Copying session URL:', window.location.href)
-      
-      // Primary method: Clipboard API
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(window.location.href)
-        toast.success('Session URL copied to clipboard!')
-      } else {
-        // Fallback method for older browsers
-        const textArea = document.createElement('textarea')
-        textArea.value = window.location.href
-        textArea.style.position = 'fixed'
-        textArea.style.left = '-999999px'
-        textArea.style.top = '-999999px'
-        document.body.appendChild(textArea)
-        textArea.select()
-        textArea.setSelectionRange(0, 99999)
-        
-        const successful = document.execCommand('copy')
-        document.body.removeChild(textArea)
-        
-        if (successful) {
-          toast.success('Session URL copied to clipboard!')
-        } else {
-          throw new Error('Copy command failed')
-        }
-      }
-    } catch (error) {
-      console.error('💥 Copy URL failed:', error)
-      
-      // Show the URL in a prompt as last resort
-      const url = window.location.href
-      if (window.prompt) {
-        window.prompt('Copy this URL manually:', url)
-      }
-      toast.info('Please copy the URL manually from the address bar')
-    }
-  }
-
-  const handleCopySessionCode = async () => {
-    try {
-      const sessionCode = session.session_id.slice(0, 8).toUpperCase()
-      console.log('📋 Copying session code:', sessionCode)
-      
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(sessionCode)
-        toast.success('Session code copied!')
-      } else {
-        // Fallback method
-        const textArea = document.createElement('textarea')
-        textArea.value = sessionCode
-        textArea.style.position = 'fixed'
-        textArea.style.left = '-999999px'
-        textArea.style.top = '-999999px'
-        document.body.appendChild(textArea)
-        textArea.select()
-        textArea.setSelectionRange(0, 99999)
-        
-        const successful = document.execCommand('copy')
-        document.body.removeChild(textArea)
-        
-        if (successful) {
-          toast.success('Session code copied!')
-        } else {
-          throw new Error('Copy command failed')
-        }
-      }
-    } catch (error) {
-      console.error('💥 Copy session code failed:', error)
-      
-      const sessionCode = session.session_id.slice(0, 8).toUpperCase()
-      if (window.prompt) {
-        window.prompt('Copy this session code manually:', sessionCode)
-      }
-      toast.info('Please copy the session code manually')
-    }
   }
 
   return (
@@ -184,7 +81,7 @@ export function SessionStatus({ session }: SessionStatusProps) {
       {/* Users */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-lg flex items-center space-x-2">
+          <Car          <CardTitle className="text-lg flex items-center space-x-2">
             <Users className="h-5 w-5" />
             <span>Participants</span>
           </CardTitle>
@@ -223,23 +120,6 @@ export function SessionStatus({ session }: SessionStatusProps) {
           <CardTitle className="text-lg">Controls</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          {canJoin && (
-            <Button 
-              className="w-full bg-purple-600 hover:bg-purple-700" 
-              onClick={handleJoin}
-              disabled={joinMutation.isPending}
-            >
-              {joinMutation.isPending ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Joining...
-                </>
-              ) : (
-                'Join as User B'
-              )}
-            </Button>
-          )}
-
           {canStart && (
             <Button 
               className="w-full" 
@@ -296,47 +176,11 @@ export function SessionStatus({ session }: SessionStatusProps) {
                 <Button 
                   variant="outline" 
                   size="sm"
-                  onClick={async () => {
-                    try {
-                      const sessionCode = session.session_id.slice(0, 8).toUpperCase()
-                      console.log('📋 Copying session code:', sessionCode)
-                      
-                      if (navigator.clipboard && window.isSecureContext) {
-                        await navigator.clipboard.writeText(sessionCode)
-                        toast.success('Session code copied! Others can use this code to join.')
-                      } else {
-                        const textArea = document.createElement('textarea')
-                        textArea.value = sessionCode
-                        textArea.style.position = 'fixed'
-                        textArea.style.left = '-999999px'
-                        textArea.style.top = '-999999px'
-                        document.body.appendChild(textArea)
-                        textArea.select()
-                        textArea.setSelectionRange(0, 99999)
-                        
-                        const successful = document.execCommand('copy')
-                        document.body.removeChild(textArea)
-                        
-                        if (successful) {
-                          toast.success('Session code copied!')
-                        } else {
-                          throw new Error('Copy command failed')
-                        }
-                      }
-                    } catch (error) {
-                      console.error('💥 Copy session code failed:', error)
-                      
-                      const sessionCode = session.session_id.slice(0, 8).toUpperCase()
-                      if (window.prompt) {
-                        window.prompt('Copy this session code manually:', sessionCode)
-                      }
-                      toast.info('Please copy the session code manually')
-                    }
-                  }}
+                  onClick={handleCopySessionCode}
                   className="flex-1"
                 >
                   <Copy className="h-4 w-4 mr-2" />
-                  Copy Code ({session.session_id.slice(0, 8).toUpperCase()})
+                  Copy Code
                 </Button>
               </div>
             </div>

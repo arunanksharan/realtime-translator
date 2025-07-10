@@ -14,62 +14,40 @@ import { ThemeToggle } from "@/components/theme-toggle"
 import { CreateSessionDialog } from "@/components/CreateSessionDialog"
 import { JoinSessionDialog } from "@/components/JoinSessionDialog"
 import { SessionListDialog } from "@/components/SessionListDialog"
-import { cn } from "@/lib/utils"
-
-// Mock data for demonstration
-const recentSessions = [
-  {
-    id: "1",
-    name: "Spanish Conversation",
-    participants: ["John Doe", "Maria Garcia"],
-    languages: ["English", "Spanish"],
-    status: "completed",
-    duration: "45 min",
-    createdAt: "2024-01-15T10:30:00Z",
-  },
-  {
-    id: "2",
-    name: "French Business Meeting",
-    participants: ["Alice Johnson", "Pierre Martin"],
-    languages: ["English", "French"],
-    status: "completed",
-    duration: "1h 20min",
-    createdAt: "2024-01-14T14:15:00Z",
-  },
-  {
-    id: "3",
-    name: "Japanese Language Practice",
-    participants: ["Bob Wilson", "Yuki Tanaka"],
-    languages: ["English", "Japanese"],
-    status: "active",
-    duration: "12 min",
-    createdAt: "2024-01-15T16:45:00Z",
-  },
-]
-
-const stats = {
-  totalSessions: 47,
-  hoursTranslated: 234,
-  languagesPaired: 12,
-  accuracy: 96.5,
-}
+import { cn, getLanguageName } from "@/lib/utils"
+import { useSessions } from "@/hooks/use-sessions"
+import { formatDistanceToNow } from "date-fns"
+import { monitoringApi } from "@/lib/api"
+import { useQuery } from "@tanstack/react-query"
 
 export default function DashboardPage() {
   const router = useRouter()
   const [showCreateDialog, setShowCreateDialog] = React.useState(false)
+  const [showSessionList, setShowSessionList] = React.useState(false)
   const [isMuted, setIsMuted] = React.useState(false)
   const [isRecording, setIsRecording] = React.useState(false)
+
+  // Fetch real session data
+  const { data: sessionsData, isLoading: sessionsLoading } = useSessions(10)
+  const { data: serviceStats } = useQuery({
+    queryKey: ['service-stats'],
+    queryFn: monitoringApi.stats,
+    refetchInterval: 60000, // Refresh every minute
+  })
 
   const handleCreateSession = () => {
     setShowCreateDialog(true)
   }
 
   const handleCreateSessionSuccess = (sessionId: string) => {
-    // ADD DEBUG LOGGING
     console.log('🎯 Dashboard received session ID:', sessionId)
     console.log('🚀 Navigating to session page...')
     
     // Navigate to the created session
+    router.push(`/session/${sessionId}`)
+  }
+
+  const handleSessionClick = (sessionId: string) => {
     router.push(`/session/${sessionId}`)
   }
 
@@ -81,10 +59,52 @@ export default function DashboardPage() {
         return "bg-blue-500"
       case "failed":
         return "bg-red-500"
+      case "waiting":
+        return "bg-yellow-500"
+      case "created":
+        return "bg-purple-500"
       default:
         return "bg-gray-500"
     }
   }
+
+  const getStatusBadgeVariant = (status: string) => {
+    switch (status) {
+      case "active":
+        return "default"
+      case "waiting":
+      case "created":
+        return "secondary"
+      default:
+        return "outline"
+    }
+  }
+
+  // Calculate stats from real data
+  const stats = React.useMemo(() => {
+    if (!sessionsData?.sessions || !serviceStats) {
+      return {
+        totalSessions: 0,
+        activeSessions: 0,
+        completedSessions: 0,
+        uniqueLanguages: 0,
+      }
+    }
+
+    const sessions = sessionsData.sessions
+    const languagesSet = new Set<string>()
+    sessions.forEach(session => {
+      languagesSet.add(session.language_a)
+      languagesSet.add(session.language_b)
+    })
+
+    return {
+      totalSessions: serviceStats.total_sessions || sessions.length,
+      activeSessions: serviceStats.active_sessions || sessions.filter(s => s.status === 'active').length,
+      completedSessions: sessions.filter(s => s.status === 'completed').length,
+      uniqueLanguages: languagesSet.size,
+    }
+  }, [sessionsData, serviceStats])
 
   return (
     <div className="min-h-screen bg-background">
@@ -143,7 +163,10 @@ export default function DashboardPage() {
             
             <JoinSessionDialog />
             
-            <Card className="hover:shadow-md transition-shadow cursor-pointer">
+            <Card 
+              className="hover:shadow-md transition-shadow cursor-pointer" 
+              onClick={() => setShowSessionList(true)}
+            >
               <CardHeader className="pb-4">
                 <CardTitle className="flex items-center space-x-2">
                   <History className="h-5 w-5" />
@@ -175,34 +198,34 @@ export default function DashboardPage() {
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold">{stats.totalSessions}</div>
-                <p className="text-xs text-muted-foreground">+12 from last month</p>
+                <p className="text-xs text-muted-foreground">All time</p>
               </CardContent>
             </Card>
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium">Hours Translated</CardTitle>
+                <CardTitle className="text-sm font-medium">Active Sessions</CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold">{stats.hoursTranslated}</div>
-                <p className="text-xs text-muted-foreground">+23 from last month</p>
+                <div className="text-2xl font-bold">{stats.activeSessions}</div>
+                <p className="text-xs text-muted-foreground">Currently running</p>
               </CardContent>
             </Card>
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium">Languages Paired</CardTitle>
+                <CardTitle className="text-sm font-medium">Completed</CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold">{stats.languagesPaired}</div>
-                <p className="text-xs text-muted-foreground">+2 from last month</p>
+                <div className="text-2xl font-bold">{stats.completedSessions}</div>
+                <p className="text-xs text-muted-foreground">Successfully finished</p>
               </CardContent>
             </Card>
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium">Accuracy</CardTitle>
+                <CardTitle className="text-sm font-medium">Languages Used</CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold">{stats.accuracy}%</div>
-                <Progress value={stats.accuracy} className="mt-2" />
+                <div className="text-2xl font-bold">{stats.uniqueLanguages}</div>
+                <p className="text-xs text-muted-foreground">Unique languages</p>
               </CardContent>
             </Card>
           </div>
@@ -210,32 +233,74 @@ export default function DashboardPage() {
 
         {/* Recent Sessions */}
         <div>
-          <h2 className="text-xl font-semibold mb-4">Recent Sessions</h2>
-          <div className="space-y-4">
-            {recentSessions.map((session) => (
-              <Card key={session.id} className="hover:shadow-md transition-shadow">
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-3">
-                      <div className={cn("w-3 h-3 rounded-full", getStatusColor(session.status))} />
-                      <div>
-                        <CardTitle className="text-base">{session.name}</CardTitle>
-                        <CardDescription>
-                          {session.participants.join(" & ")} • {session.languages.join(" ⇄ ")}
-                        </CardDescription>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <Badge variant={session.status === "active" ? "default" : "secondary"}>
-                        {session.status}
-                      </Badge>
-                      <p className="text-xs text-muted-foreground mt-1">{session.duration}</p>
-                    </div>
-                  </div>
-                </CardHeader>
-              </Card>
-            ))}
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-semibold">Recent Sessions</h2>
+            {sessionsData && sessionsData.sessions.length > 3 && (
+              <Button 
+                variant="ghost" 
+                size="sm"
+                onClick={() => setShowSessionList(true)}
+              >
+                View all
+              </Button>
+            )}
           </div>
+          
+          {sessionsLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <Spinner className="h-6 w-6" />
+            </div>
+          ) : sessionsData?.sessions && sessionsData.sessions.length > 0 ? (
+            <div className="space-y-4">
+              {sessionsData.sessions.slice(0, 3).map((session) => {
+                const sessionName = `${getLanguageName(session.language_a)} ⟷ ${getLanguageName(session.language_b)}`
+                const timeAgo = session.created_at ? formatDistanceToNow(new Date(session.created_at), { addSuffix: true }) : 'Unknown'
+                
+                return (
+                  <Card 
+                    key={session.session_id} 
+                    className="hover:shadow-md transition-shadow cursor-pointer"
+                    onClick={() => handleSessionClick(session.session_id)}
+                  >
+                    <CardHeader>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-3">
+                          <div className={cn("w-3 h-3 rounded-full", getStatusColor(session.status))} />
+                          <div>
+                            <CardTitle className="text-base">{sessionName}</CardTitle>
+                            <CardDescription>
+                              Created {timeAgo}
+                              {session.user_b_id ? ' • 2 participants' : ' • Waiting for participant'}
+                            </CardDescription>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <Badge variant={getStatusBadgeVariant(session.status)}>
+                            {session.status}
+                          </Badge>
+                          {session.started_at && session.ended_at && (
+                            <p className="text-xs text-muted-foreground mt-1">
+                              {formatDistanceToNow(new Date(session.started_at), { addSuffix: false })}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    </CardHeader>
+                  </Card>
+                )
+              })}
+            </div>
+          ) : (
+            <Card>
+              <CardContent className="flex flex-col items-center justify-center py-8">
+                <p className="text-muted-foreground mb-4">No sessions yet</p>
+                <Button onClick={handleCreateSession}>
+                  <Plus className="h-4 w-4 mr-2" />
+                  Create your first session
+                </Button>
+              </CardContent>
+            </Card>
+          )}
         </div>
       </main>
 
@@ -244,6 +309,13 @@ export default function DashboardPage() {
         open={showCreateDialog} 
         onOpenChange={setShowCreateDialog}
         onSuccess={handleCreateSessionSuccess}
+      />
+      
+      {/* Session List Dialog */}
+      <SessionListDialog
+        open={showSessionList}
+        onOpenChange={setShowSessionList}
+        onSelectSession={handleSessionClick}
       />
     </div>
   )

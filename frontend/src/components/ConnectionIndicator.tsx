@@ -55,14 +55,33 @@ export function ConnectionIndicator({
   }
 
   const getStatusText = () => {
-    if (dailyStatus === 'joined' && websocketStatus === 'connected') {
+    // More detailed status messages for debugging
+    if (websocketStatus === 'connecting' && dailyStatus === 'idle') {
+      return 'Connecting to server...'
+    } else if (websocketStatus === 'connected' && dailyStatus === 'joining') {
+      return 'Connecting to audio...'
+    } else if (websocketStatus === 'connected' && dailyStatus === 'joined') {
       return 'Connected'
-    } else if (dailyStatus === 'joining' || websocketStatus === 'connecting') {
-      return 'Connecting...'
-    } else if (dailyStatus === 'error' || websocketStatus === 'failed') {
+    } else if (websocketStatus === 'failed' || dailyStatus === 'error') {
       return 'Connection Failed'
+    } else if (websocketStatus === 'disconnected') {
+      return 'Disconnected from server'
+    } else if (websocketStatus === 'connected' && dailyStatus === 'idle') {
+      return 'Server connected, audio pending...'
     } else {
-      return 'Disconnected'
+      return `WS: ${websocketStatus}, Audio: ${dailyStatus}`
+    }
+  }
+
+  const getStatusColor = () => {
+    if (websocketStatus === 'connected' && dailyStatus === 'joined') {
+      return 'text-green-500'
+    } else if (websocketStatus === 'connecting' || dailyStatus === 'joining') {
+      return 'text-yellow-500'
+    } else if (websocketStatus === 'failed' || dailyStatus === 'error') {
+      return 'text-red-500'
+    } else {
+      return 'text-gray-500'
     }
   }
 
@@ -72,7 +91,7 @@ export function ConnectionIndicator({
         {getWebSocketIcon()}
         {getNetworkIcon()}
       </div>
-      <span className={`text-sm font-medium ${getDailyStatusColor()}`}>
+      <span className={`text-sm font-medium ${getStatusColor()}`}>
         {getStatusText()}
       </span>
     </div>

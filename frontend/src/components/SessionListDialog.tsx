@@ -1,8 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { Clock, Languages, Users, Play, UserPlus } from 'lucide-react'
+import { Clock, Languages, Users, Play, UserPlus, ExternalLink } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -14,14 +14,32 @@ import {
   DialogTitle, 
   DialogTrigger 
 } from '@/components/ui/dialog'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import { useSessions, useJoinSession } from '@/hooks/use-sessions'
 import { formatDate, getLanguageName, getLanguageFlag } from '@/lib/utils'
+import { formatDistanceToNow } from 'date-fns'
 
-export function SessionListDialog() {
+interface SessionListDialogProps {
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+  onSelectSession?: (sessionId: string) => void
+  showTrigger?: boolean
+}
+
+export function SessionListDialog({ 
+  open: controlledOpen, 
+  onOpenChange: controlledOnOpenChange,
+  onSelectSession,
+  showTrigger = false 
+}: SessionListDialogProps = {}) {
   const router = useRouter()
-  const [open, setOpen] = useState(false)
-  const { data: sessionsData, isLoading } = useSessions(20)
+  const [internalOpen, setInternalOpen] = useState(false)
+  const { data: sessionsData, isLoading } = useSessions(50)
   const joinMutation = useJoinSession()
+  
+  // Use controlled state if provided, otherwise use internal state
+  const open = controlledOpen !== undefined ? controlledOpen : internalOpen
+  const setOpen = controlledOnOpenChange || setInternalOpen
 
   const handleJoinSession = (sessionId: string) => {
     joinMutation.mutate(sessionId, {
@@ -30,6 +48,15 @@ export function SessionListDialog() {
         router.push(`/session/${sessionId}`)
       },
     })
+  }
+  
+  const handleSelectSession = (sessionId: string) => {
+    if (onSelectSession) {
+      onSelectSession(sessionId)
+      setOpen(false)
+    } else {
+      router.push(`/session/${sessionId}`)
+    }
   }
 
   const getStatusColor = (status: string) => {
@@ -66,90 +93,142 @@ export function SessionListDialog() {
     return session.status === 'waiting' || session.status === 'created'
   }
 
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Card className="hover:shadow-md transition-shadow cursor-pointer">
-          <CardHeader className="pb-4">
-            <CardTitle className="flex items-center space-x-2">
-              <Users className="h-5 w-5" />
-              <span>Available Sessions</span>
-            </CardTitle>
-          </CardHeader>
-        </Card>
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>Available Translation Sessions</DialogTitle>
-        </DialogHeader>
-        
-        <div className="max-h-96 overflow-y-auto">
-          {isLoading ? (
-            <div className="flex items-center justify-center py-8">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-            </div>
-          ) : !sessionsData?.sessions?.length ? (
-            <div className="text-center py-8 text-gray-500">
-              No sessions available to join
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {sessionsData.sessions.map((session) => (
-                <Card key={session.session_id} className="hover:shadow-sm transition-shadow">
+  const getStatusBadgeVariant = (status: string) => {
+    switch (status) {
+      case 'active':
+        return 'default' as const
+      case 'waiting':
+      case 'created':
+        return 'secondary' as const
+      case 'completed':
+        return 'outline' as const
+      default:
+        return 'destructive' as const
+    }
+  }
+
+  const dialogContent = (
+    <>
+      <DialogHeader>
+        <DialogTitle>Your Translation Sessions</DialogTitle>
+      </DialogHeader>
+      
+      <ScrollArea className="h-[400px] pr-4">
+        {isLoading ? (
+          <div className="flex items-center justify-center py-8">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+          </div>
+        ) : !sessionsData?.sessions?.length ? (
+          <div className="text-center py-8 text-gray-500">
+            No sessions found
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {sessionsData.sessions.map((session) => {
+              const timeAgo = session.created_at 
+                ? formatDistanceToNow(new Date(session.created_at), { addSuffix: true })
+                : 'Unknown'
+              
+              return (
+                <Card 
+                  key={session.session_id} 
+                  className="hover:shadow-md transition-shadow cursor-pointer"
+                  onClick={() => handleSelectSession(session.session_id)}
+                >
                   <CardContent className="p-4">
                     <div className="flex items-center justify-between">
-                      <div className="flex items-center space-x-3">
-                        <div className={`w-3 h-3 rounded-full ${getStatusColor(session.status)}`} />
-                        <div>
-                          <div className="flex items-center space-x-2 mb-1">
-                            <span className="language-flag">
-                              {getLanguageFlag(session.language_a)}
-                            </span>
-                            <span className="text-sm font-medium">
-                              {getLanguageName(session.language_a)}
-                            </span>
-                            <span className="text-gray-400">⟷</span>
-                            <span className="language-flag">
-                              {getLanguageFlag(session.language_b)}
-                            </span>
-                            <span className="text-sm font-medium">
-                              {getLanguageName(session.language_b)}
-                            </span>
-                          </div>
-                          <div className="flex items-center space-x-4 text-xs text-gray-500">
-                            <span className="flex items-center space-x-1">
-                              <Clock className="h-3 w-3" />
-                              <span>{formatDate(session.created_at)}</span>
-                            </span>
-                            <span className="flex items-center space-x-1">
-                              <Users className="h-3 w-3" />
-                              <span>{session.user_b_id ? 2 : 1} joined</span>
-                            </span>
-                          </div>
+                      <div className="flex-1">
+                        <div className="flex items-center space-x-2 mb-2">
+                          <div className={`w-2 h-2 rounded-full ${getStatusColor(session.status)}`} />
+                          <span className="language-flag text-sm">
+                            {getLanguageFlag(session.language_a)}
+                          </span>
+                          <span className="text-sm font-medium">
+                            {getLanguageName(session.language_a)}
+                          </span>
+                          <span className="text-gray-400 text-sm">⟷</span>
+                          <span className="language-flag text-sm">
+                            {getLanguageFlag(session.language_b)}
+                          </span>
+                          <span className="text-sm font-medium">
+                            {getLanguageName(session.language_b)}
+                          </span>
+                        </div>
+                        <div className="flex items-center space-x-4 text-xs text-muted-foreground">
+                          <span className="flex items-center space-x-1">
+                            <Clock className="h-3 w-3" />
+                            <span>{timeAgo}</span>
+                          </span>
+                          <span className="flex items-center space-x-1">
+                            <Users className="h-3 w-3" />
+                            <span>{session.user_b_id ? '2 participants' : 'Waiting for participant'}</span>
+                          </span>
                         </div>
                       </div>
                       <div className="flex items-center space-x-2">
-                        <Badge variant={session.status === 'active' ? 'default' : 'secondary'}>
+                        <Badge variant={getStatusBadgeVariant(session.status)}>
                           {getStatusLabel(session.status)}
                         </Badge>
-                        {canJoinSession(session) && (
+                        {session.status === 'created' && !session.user_b_id && (
                           <Button
                             size="sm"
-                            onClick={() => handleJoinSession(session.session_id)}
+                            variant="outline"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleJoinSession(session.session_id)
+                            }}
                             disabled={joinMutation.isPending}
                           >
-                            <UserPlus className="h-4 w-4 mr-1" />
+                            <UserPlus className="h-3 w-3 mr-1" />
                             Join
                           </Button>
                         )}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handleSelectSession(session.session_id)
+                          }}
+                        >
+                          <ExternalLink className="h-3 w-3" />
+                        </Button>
                       </div>
                     </div>
                   </CardContent>
                 </Card>
-              ))}
-            </div>
-          )}
-        </div>
+              )
+            })}
+          </div>
+        )}
+      </ScrollArea>
+    </>
+  )
+
+  if (showTrigger) {
+    return (
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogTrigger asChild>
+          <Card className="hover:shadow-md transition-shadow cursor-pointer">
+            <CardHeader className="pb-4">
+              <CardTitle className="flex items-center space-x-2">
+                <Users className="h-5 w-5" />
+                <span>Session History</span>
+              </CardTitle>
+            </CardHeader>
+          </Card>
+        </DialogTrigger>
+        <DialogContent className="sm:max-w-2xl">
+          {dialogContent}
+        </DialogContent>
+      </Dialog>
+    )
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogContent className="sm:max-w-2xl">
+        {dialogContent}
       </DialogContent>
     </Dialog>
   )
@@ -157,7 +236,5 @@ export function SessionListDialog() {
 
 // Export a simple trigger component for the dashboard
 export function SessionListTrigger() {
-  return (
-    <SessionListDialog />
-  )
+  return <SessionListDialog showTrigger={true} />
 }

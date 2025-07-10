@@ -17,13 +17,7 @@ export function useLogin() {
       setLoading(true)
     },
     onSuccess: (data) => {
-      // Store tokens in localStorage
-      localStorage.setItem(STORAGE_KEYS.ACCESS_TOKEN, data.tokens.access_token)
-      if (data.tokens.refresh_token) {
-        localStorage.setItem(STORAGE_KEYS.REFRESH_TOKEN, data.tokens.refresh_token)
-      }
-      
-      // Update auth store
+      // Update auth store (which will handle localStorage)
       setAuth(data.user, data.tokens)
       
       toast.success('Welcome back!')
@@ -51,13 +45,7 @@ export function useRegister() {
       setLoading(true)
     },
     onSuccess: (data) => {
-      // Store tokens in localStorage
-      localStorage.setItem(STORAGE_KEYS.ACCESS_TOKEN, data.tokens.access_token)
-      if (data.tokens.refresh_token) {
-        localStorage.setItem(STORAGE_KEYS.REFRESH_TOKEN, data.tokens.refresh_token)
-      }
-      
-      // Update auth store
+      // Update auth store (which will handle localStorage)
       setAuth(data.user, data.tokens)
       
       toast.success('Account created successfully!')
@@ -132,17 +120,12 @@ export function useRefreshToken() {
   return useMutation({
     mutationFn: authApi.refresh,
     onSuccess: (data) => {
-      localStorage.setItem(STORAGE_KEYS.ACCESS_TOKEN, data.tokens.access_token)
-      if (data.tokens.refresh_token) {
-        localStorage.setItem(STORAGE_KEYS.REFRESH_TOKEN, data.tokens.refresh_token)
-      }
+      // Update auth store (which will handle localStorage)
       setAuth(data.user, data.tokens)
     },
     onError: (error) => {
       console.error('Refresh token error:', error)
-      clearAuth()
-      localStorage.removeItem(STORAGE_KEYS.ACCESS_TOKEN)
-      localStorage.removeItem(STORAGE_KEYS.REFRESH_TOKEN)
+      clearAuth() // This will clear both localStorage and store
     },
   })
 }
