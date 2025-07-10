@@ -3,6 +3,7 @@ Authentication API routes
 """
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime, timedelta
@@ -138,6 +139,8 @@ async def register_user(request: UserRegisterRequest):
 @router.post("/login", response_model=AuthResponse)
 async def login_user(request: UserLoginRequest):
     """Authenticate user and return tokens"""
+
+    print(request)  
     
     async with get_async_session() as db:
         # Find user by email
@@ -316,7 +319,9 @@ async def get_current_user_info(credentials: HTTPAuthorizationCredentials = Depe
                 full_name=user.full_name,
                 preferred_language=user.preferred_language,
                 is_active=user.is_active,
-                created_at=user.created_at.isoformat()
+                is_verified=user.is_verified,
+                created_at=user.created_at.isoformat(),
+                updated_at=user.updated_at.isoformat() if user.updated_at else user.created_at.isoformat()
             )
             
     except HTTPException:
@@ -388,7 +393,9 @@ async def update_user_profile(
                 full_name=user.full_name,
                 preferred_language=user.preferred_language,
                 is_active=user.is_active,
-                created_at=user.created_at.isoformat()
+                is_verified=user.is_verified,
+                created_at=user.created_at.isoformat(),
+                updated_at=user.updated_at.isoformat() if user.updated_at else user.created_at.isoformat()
             )
             
     except HTTPException:

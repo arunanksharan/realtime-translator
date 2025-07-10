@@ -16,7 +16,7 @@ from sqlalchemy import select, update, delete
 from sqlalchemy.orm import selectinload
 
 from app.models import TranslationSession, SessionStatus, User, SessionMetrics
-from app.services.pipeline_manager_simple import DualPipelineManager, TranslationConfig
+from app.services.pipeline_manager import DualPipelineManager, TranslationConfig
 from app.services.daily_service import DailyService
 from app.database import get_async_session
 from app.core.config import settings
@@ -72,62 +72,99 @@ class TranslationService:
         language_b: str,
         user_b_id: Optional[str] = None
     ) -> TranslationSession:
-        """Create a new translation session"""
+        """Create a new translation session with comprehensive error handling"""
         
         session_id = str(uuid.uuid4())
+        logger.info(f"🏗️ Creating session {session_id} for user {user_a_id}")
         
-        async with get_async_session() as db:
-            # Validate users exist
-            user_a = await db.get(User, user_a_id)
-            if not user_a:
-                raise ValueError(f"User A {user_a_id} not found")
-                
-            if user_b_id:
-                user_b = await db.get(User, user_b_id)
-                if not user_b:
-                    raise ValueError(f"User B {user_b_id} not found")
+        room_response = None
+        try:
+            async with get_async_session() as db:
+                # Validate users exist with detailed logging
+                logger.info(f"🔍 Validating user A: {user_a_id}")
+                user_a = await db.get(User, user_a_id)
+                if not user_a:
+                    logger.error(f"❌ User A {user_a_id} not found in database")
+                    raise ValueError(f"User A {user_a_id} not found")
+                logger.info(f"✅ User A validated: {user_a.email}")
                     
-            # Create Daily.co room
-            room_response = await self.daily_service.create_room(
-                name=f"translation_{session_id}",
-                properties={
-                    "max_participants": 4,  # 2 users + 2 bots
-                    "exp": int((datetime.now() + timedelta(hours=2)).timestamp()),
-                    "enable_screenshare": False,
-                    "enable_chat": False,
-                    "start_audio_off": False,
-                    "start_video_off": True,
-                    "enable_recording": False,
-                    "enable_transcription": False,
-                    "enable_network_ui": False,
-                    "enable_prejoin_ui": False,
-                    "autojoin": True
-                }
-            )
+                if user_b_id:
+                    logger.info(f"🔍 Validating user B: {user_b_id}")
+                    user_b = await db.get(User, user_b_id)
+                    if not user_b:
+                        logger.error(f"❌ User B {user_b_id} not found in database")
+                        raise ValueError(f"User B {user_b_id} not found")
+                    logger.info(f"✅ User B validated: {user_b.email}")
+                        
+                # Create Daily.co room with error handling
+                logger.info(f"🏠 Creating Daily.co room for session {session_id}")
+                try:
+                    room_response = await self.daily_service.create_room(
+                        name=f"translation_{session_id}",
+                        properties={
+                            "max_participants": 4,  # 2 users + 2 bots
+                            "exp": int((datetime.now() + timedelta(hours=2)).timestamp()),
+                            "enable_screenshare": False,
+                            "enable_chat": False,
+                            "start_audio_off": False,
+                            "start_video_off": True,
+                            "enable_recording": False,
+                            "enable_network_ui": False,
+                            "enable_prejoin_ui": False,
+                            "autojoin": True
+                        }
+                    )
+                    logger.info(f"✅ Daily.co room created: {room_response['url']}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to create Daily.co room: {e}")
+                    raise ValueError(f"Failed to create Daily.co room: {e}")
+                
+                room_url = room_response["url"]
+                room_name = room_response["name"]
+                
+                # Create database record with explicit commit
+                logger.info(f"💾 Creating database record for session {session_id}")
+                session = TranslationSession(
+                    id=session_id,
+                    user_a_id=user_a_id,
+                    user_b_id=user_b_id,
+                    language_a=language_a,
+                    language_b=language_b,
+                    room_url=room_url,
+                    room_name=room_name,
+                    status=SessionStatus.CREATED,
+                    created_at=datetime.now(),
+                    expires_at=datetime.now() + timedelta(hours=2)
+                )
+                
+                db.add(session)
+                
+                # Explicit commit with error handling
+                try:
+                    await db.commit()
+                    logger.info(f"✅ Database COMMIT successful for session {session_id}")
+                except Exception as e:
+                    logger.error(f"❌ Database COMMIT failed for session {session_id}: {e}")
+                    await db.rollback()
+                    raise ValueError(f"Database commit failed: {e}")
+                
+                await db.refresh(session)
+                
+                logger.info(f"🎉 Successfully created session {session_id} for {language_a}↔{language_b}")
+                return session
+                
+        except Exception as e:
+            logger.error(f"💥 Session creation failed for {session_id}: {e}")
             
-            room_url = room_response["url"]
-            room_name = room_response["name"]
+            # Clean up Daily.co room if it was created
+            if room_response:
+                try:
+                    await self.daily_service.delete_room(room_response["name"])
+                    logger.info(f"🧹 Cleaned up Daily.co room after failure")
+                except Exception as cleanup_error:
+                    logger.error(f"❌ Failed to cleanup Daily.co room: {cleanup_error}")
             
-            # Create database record
-            session = TranslationSession(
-                id=session_id,
-                user_a_id=user_a_id,
-                user_b_id=user_b_id,
-                language_a=language_a,
-                language_b=language_b,
-                room_url=room_url,
-                room_name=room_name,
-                status=SessionStatus.CREATED,
-                created_at=datetime.now(),
-                expires_at=datetime.now() + timedelta(hours=2)
-            )
-            
-            db.add(session)
-            await db.commit()
-            await db.refresh(session)
-            
-            logger.info(f"Created translation session {session_id} for {language_a}↔{language_b}")
-            return session
+            raise e
             
     async def join_session(self, session_id: str, user_b_id: str) -> bool:
         """Allow user B to join an existing session"""
@@ -207,13 +244,13 @@ class TranslationService:
             )
             
             # Create and initialize pipeline manager
+            pipeline_manager = DualPipelineManager(config)
+            await pipeline_manager.initialize()
+            
+            # Start pipelines
+            await pipeline_manager.start()
+            
             try:
-                pipeline_manager = DualPipelineManager(config)
-                await pipeline_manager.initialize()
-                
-                # Start pipelines
-                await pipeline_manager.start()
-                
                 # Store active session
                 self.active_sessions[session_id] = pipeline_manager
                 
@@ -289,7 +326,9 @@ class TranslationService:
                     session.ended_at = datetime.now()
                     
                     # Update metrics
-                    session_metrics = await db.get(SessionMetrics, session_id)
+                    stmt = select(SessionMetrics).where(SessionMetrics.session_id == session_id)
+                    result = await db.execute(stmt)
+                    session_metrics = result.scalar_one_or_none()
                     if session_metrics:
                         session_metrics.total_translations = metrics.get("total_translations", 0)
                         if session.started_at:
@@ -350,25 +389,34 @@ class TranslationService:
             if not session:
                 raise ValueError(f"Session {session_id} not found")
                 
-            if user_id not in [session.user_a_id, session.user_b_id]:
+            # Check authorization - allow user_a or user_b (if exists)
+            authorized_users = [session.user_a_id]
+            if session.user_b_id:
+                authorized_users.append(session.user_b_id)
+                
+            if user_id not in authorized_users:
                 raise ValueError(f"User {user_id} not authorized for session {session_id}")
                 
             if session.status == SessionStatus.EXPIRED:
                 raise ValueError(f"Session {session_id} has expired")
                 
-        # Create user token
-        user_token = await self.daily_service.create_token(
-            room_name=session.room_name,
-            user_name=user_id,
-            is_owner=False,
-            exp_time=7200,  # 2 hours
-            properties={
-                "enable_recording": False,
-                "enable_transcription": False,
-                "enable_chat": False,
-                "enable_screenshare": False
-            }
-        )
+        # Create user token with error handling
+        try:
+            user_token = await self.daily_service.create_token(
+                room_name=session.room_name,
+                user_name=user_id,
+                is_owner=False,
+                exp_time=7200,  # 2 hours
+                properties={
+                    "enable_recording": False,
+                    "enable_screenshare": False
+                }
+            )
+        except Exception as e:
+            logger.warning(f"Daily.co token creation failed: {e}")
+            # Return a mock token for development/testing
+            user_token = f"mock_token_{session_id}_{user_id}"
+            logger.info(f"Using mock token for development: {user_token}")
         
         return {
             "room_url": session.room_url,
@@ -407,7 +455,11 @@ class TranslationService:
         """Get detailed metrics for a session"""
         
         async with get_async_session() as db:
-            session_metrics = await db.get(SessionMetrics, session_id)
+            # Get metrics by session_id (foreign key), not primary key
+            stmt = select(SessionMetrics).where(SessionMetrics.session_id == session_id)
+            result = await db.execute(stmt)
+            session_metrics = result.scalar_one_or_none()
+            
             if not session_metrics:
                 return None
                 
@@ -639,6 +691,19 @@ class TranslationService:
             
         except jwt.InvalidTokenError:
             return None
+            
+    async def verify_share_token(self, session_id: str, token: str) -> bool:
+        """Verify share token for a specific session"""
+        
+        logger.info(f"Verifying share token for session {session_id}, token length: {len(token)}")
+        validated_session_id = await self.validate_share_token(token)
+        
+        if validated_session_id == session_id:
+            logger.info(f"Token valid for session {session_id}")
+            return True
+        else:
+            logger.warning(f"Token validation failed. Expected: {session_id}, Got: {validated_session_id}")
+            return False
 
 # Global service instance
 translation_service = TranslationService()

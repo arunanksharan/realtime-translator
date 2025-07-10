@@ -35,7 +35,6 @@ class DailyService:
                 "start_audio_off": properties.get("start_audio_off", False),
                 "start_video_off": properties.get("start_video_off", True),
                 "enable_recording": properties.get("enable_recording", False),
-                "enable_transcription": properties.get("enable_transcription", False),
                 "enable_network_ui": properties.get("enable_network_ui", False),
                 "enable_prejoin_ui": properties.get("enable_prejoin_ui", False),
                 "lang": properties.get("lang", "en"),
@@ -116,15 +115,21 @@ class DailyService:
     ) -> str:
         """Create a room access token"""
         
+        # Calculate expiration timestamp
+        exp_timestamp = int(datetime.now().timestamp()) + exp_time
+        
         token_config = {
             "properties": {
                 "room_name": room_name,
                 "user_name": user_name,
                 "is_owner": is_owner,
-                "exp": int(datetime.now().timestamp()) + exp_time,
+                "exp": exp_timestamp,
                 **(properties or {})
             }
         }
+        
+        logger.info(f"🎫 Creating token for user {user_name} in room {room_name}")
+        logger.debug(f"🔧 Token config: {token_config}")
         
         async with httpx.AsyncClient() as client:
             try:
@@ -134,14 +139,22 @@ class DailyService:
                     json=token_config,
                     timeout=30.0
                 )
+                
+                if response.status_code != 200:
+                    logger.error(f"❌ Daily.co API error: {response.status_code}")
+                    logger.error(f"📋 Response body: {response.text}")
+                    
                 response.raise_for_status()
                 
                 token_data = response.json()
-                logger.info(f"Created token for user {user_name} in room {room_name}")
+                logger.info(f"✅ Created token for user {user_name} in room {room_name}")
                 return token_data["token"]
                 
             except httpx.HTTPError as e:
-                logger.error(f"Failed to create token for {user_name}: {e}")
+                logger.error(f"❌ Failed to create token for {user_name}: {e}")
+                if hasattr(e, 'response') and e.response:
+                    logger.error(f"📋 Response status: {e.response.status_code}")
+                    logger.error(f"📋 Response body: {e.response.text}")
                 raise Exception(f"Failed to create token: {str(e)}")
     
     async def get_room_participants(self, room_name: str) -> Dict[str, Any]:

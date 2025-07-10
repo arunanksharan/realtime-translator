@@ -20,7 +20,7 @@ class WebSocketManager:
         
     async def connect(self, websocket: WebSocket, session_id: str, user_id: Optional[str] = None):
         """Connect client to session updates"""
-        await websocket.accept()
+        # DO NOT call websocket.accept() here - already done in main handler
         
         # Add to session connections
         if session_id not in self.connections:

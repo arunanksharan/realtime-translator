@@ -1,16 +1,20 @@
 """
 API routes for translation sessions
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+import logging
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.services.translation_service import translation_service
 from app.core.security import security
+from app.core.config import settings
 from app.database import get_db
 from app.models import User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 security_scheme = HTTPBearer()
@@ -51,6 +55,7 @@ class SessionResponse(BaseModel):
     expires_at: Optional[str]
     error_message: Optional[str]
     pipeline_status: Optional[Dict[str, Any]]
+    is_token_access: Optional[bool] = False
 
 class TokenResponse(BaseModel):
     room_url: str
@@ -152,6 +157,7 @@ async def generate_invite_code(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Failed to generate invite code: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate invite code: {str(e)}"
@@ -181,7 +187,9 @@ async def generate_share_link(
             )
             
         share_token = await translation_service.generate_share_token(session_id, request.expires_hours)
-        share_link = f"http://localhost:3000/session/{session_id}?token={share_token}"
+        
+        # Use the frontend URL from settings
+        share_link = f"{settings.frontend_url}/session/{session_id}?token={share_token}&role=userB"
         expires_at = datetime.utcnow() + timedelta(hours=request.expires_hours)
         
         return ShareLinkResponse(
@@ -192,6 +200,7 @@ async def generate_share_link(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Failed to generate share link: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate share link: {str(e)}"
@@ -305,7 +314,12 @@ async def start_session(
                 detail="Session not found"
             )
             
-        if current_user not in [session_status["user_a_id"], session_status["user_b_id"]]:
+        # Check authorization - handle None user_b_id
+        authorized_users = [session_status["user_a_id"]]
+        if session_status.get("user_b_id"):
+            authorized_users.append(session_status["user_b_id"])
+            
+        if current_user not in authorized_users:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not authorized for this session"
@@ -345,7 +359,12 @@ async def stop_session(
                 detail="Session not found"
             )
             
-        if current_user not in [session_status["user_a_id"], session_status["user_b_id"]]:
+        # Check authorization - handle None user_b_id
+        authorized_users = [session_status["user_a_id"]]
+        if session_status.get("user_b_id"):
+            authorized_users.append(session_status["user_b_id"])
+            
+        if current_user not in authorized_users:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not authorized for this session"
@@ -364,6 +383,49 @@ async def stop_session(
     except HTTPException:
         raise
     except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal error: {str(e)}"
+        )
+
+@router.get("/public/{session_id}/by-token", response_model=SessionResponse)
+async def get_session_by_share_token(
+    session_id: str,
+    token: str = Query(..., description="Share token")
+):
+    """Get session details using share token (for User B joining)"""
+    
+    logger.info(f"🔑 Token-based session access attempt: {session_id}, token length: {len(token)}")
+    
+    try:
+        # Verify the share token
+        is_valid = await translation_service.verify_share_token(session_id, token)
+        if not is_valid:
+            logger.warning(f"❌ Invalid token for session {session_id}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired share token"
+            )
+        
+        # Return session details
+        session_status = await translation_service.get_session_status(session_id)
+        if not session_status:
+            logger.error(f"❌ Session {session_id} not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Session not found"
+            )
+        
+        # Mark that this is a token-based access (for frontend to know user can join)
+        session_status["is_token_access"] = True
+        
+        logger.info(f"✅ Token verified for session {session_id}")
+        return SessionResponse(**session_status)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"💥 Error in token-based session access: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal error: {str(e)}"
@@ -414,8 +476,12 @@ async def get_session(
                 detail="Session not found"
             )
             
-        # Check authorization
-        if current_user not in [session_status["user_a_id"], session_status.get("user_b_id")]:
+        # Check authorization - handle None user_b_id
+        authorized_users = [session_status["user_a_id"]]
+        if session_status.get("user_b_id"):
+            authorized_users.append(session_status["user_b_id"])
+            
+        if current_user not in authorized_users:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not authorized for this session"
@@ -448,7 +514,12 @@ async def get_session_status(
             )
             
         # Check authorization
-        if current_user not in [session_status["user_a_id"], session_status["user_b_id"]]:
+        # Check authorization - handle None user_b_id
+        authorized_users = [session_status["user_a_id"]]
+        if session_status.get("user_b_id"):
+            authorized_users.append(session_status["user_b_id"])
+            
+        if current_user not in authorized_users:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not authorized for this session"
@@ -464,37 +535,76 @@ async def get_session_status(
             detail=f"Internal error: {str(e)}"
         )
 
+@router.get("/debug/auth", response_model=dict)
+async def debug_auth(
+    current_user: str = Depends(get_current_user)
+):
+    """Debug endpoint to check authentication"""
+    return {
+        "authenticated": True,
+        "user_id": current_user,
+        "message": "Authentication working correctly"
+    }
+
 @router.get("/{session_id}/tokens", response_model=TokenResponse)
 async def get_session_tokens(
     session_id: str,
     current_user: str = Depends(get_current_user)
 ):
-    """Get Daily.co room token for joining session"""
+    """Get Daily.co room token with comprehensive error handling"""
     
     try:
-        # ADD DEBUG LOGGING
-        print(f"🔍 Getting tokens for session: {session_id}, user: {current_user}")
+        logger.info(f"🎫 Token request for session: {session_id}, user: {current_user}")
         
+        # First check if session exists
+        session_status = await translation_service.get_session_status(session_id)
+        if not session_status:
+            logger.error(f"❌ Session {session_id} not found for token request")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} not found"
+            )
+        
+        logger.info(f"✅ Session {session_id} found with status: {session_status.get('status')}")
+        
+        # Check authorization
+        authorized_users = [session_status["user_a_id"]]
+        if session_status.get("user_b_id"):
+            authorized_users.append(session_status["user_b_id"])
+            
+        if current_user not in authorized_users:
+            logger.error(f"❌ User {current_user} not authorized for session {session_id}")
+            logger.info(f"📋 Authorized users: {authorized_users}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"User {current_user} not authorized for session {session_id}"
+            )
+        
+        logger.info(f"✅ User {current_user} authorized for session {session_id}")
+        
+        # Generate tokens
         token_data = await translation_service.get_user_tokens(session_id, current_user)
+        logger.info(f"🎫 Tokens generated successfully for user {current_user}")
         
-        print(f"✅ Token data retrieved: {token_data}")
         return TokenResponse(**token_data)
         
+    except HTTPException:
+        raise
     except ValueError as e:
-        print(f"❌ ValueError in get_user_tokens: {str(e)}")
+        logger.error(f"❌ ValueError in token generation: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
     except Exception as e:
-        print(f"❌ Exception in get_user_tokens: {str(e)}")
-        print(f"📍 Exception type: {type(e).__name__}")
+        logger.error(f"💥 Unexpected error in token generation: {str(e)}")
+        logger.error(f"📍 Error type: {type(e).__name__}")
         import traceback
-        print(f"📍 Traceback: {traceback.format_exc()}")
+        logger.error(f"📍 Traceback: {traceback.format_exc()}")
         
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal error: {str(e)}"
+            detail=f"Internal server error: {str(e)}"
         )
 
 @router.get("/{session_id}/token", response_model=TokenResponse)

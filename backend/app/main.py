@@ -70,13 +70,14 @@ app = FastAPI(
     openapi_url="/openapi.json" if settings.debug else None,
 )
 
-# Add CORS middleware
+# Add CORS middleware FIRST - before any routes
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:5173", "http://127.0.0.1:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Add trusted host middleware
@@ -85,7 +86,7 @@ app.add_middleware(
     allowed_hosts=["*"] if settings.debug else ["localhost", "127.0.0.1"]
 )
 
-# Include routers
+# Include routers AFTER middleware
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(sessions_router, prefix="/api/v1")
 
@@ -158,29 +159,48 @@ async def root():
 # WebSocket endpoint for real-time updates
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
-    """WebSocket endpoint for real-time session updates"""
+    """WebSocket endpoint with comprehensive error handling"""
+    
+    logger.info(f"🔌 WebSocket connection attempt for session: {session_id}")
     
     try:
-        # Verify session exists
+        # Accept connection first - required by ASGI spec
+        await websocket.accept()
+        logger.info(f"✅ WebSocket connection accepted for session {session_id}")
+        
+        # Then verify session exists
+        logger.info(f"🔍 Checking session status for: {session_id}")
         session_status = await translation_service.get_session_status(session_id)
+        
         if not session_status:
+            logger.error(f"❌ Session {session_id} not found in database")
+            await websocket.send_json({
+                "type": "error",
+                "error": "Session not found",
+                "session_id": session_id
+            })
             await websocket.close(code=4004, reason="Session not found")
             return
         
+        logger.info(f"✅ Session {session_id} found with status: {session_status.get('status')}")
+        
         # Connect to WebSocket manager
         await websocket_manager.connect(websocket, session_id)
+        logger.info(f"📡 WebSocket manager connected for session {session_id}")
         
         # Send initial status
         await websocket.send_json({
             "type": "session_status",
             "data": session_status
         })
+        logger.info(f"📤 Initial status sent for session {session_id}")
         
         # Keep connection alive and handle messages
         while True:
             try:
                 # Wait for messages or timeout
                 message = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                logger.debug(f"📨 Received WebSocket message: {message}")
                 
                 # Update ping time
                 await websocket_manager.ping_connection(websocket)
@@ -190,10 +210,17 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     await websocket.send_text("pong")
                 elif message == "get_status":
                     current_status = await translation_service.get_session_status(session_id)
-                    await websocket.send_json({
-                        "type": "session_status",
-                        "data": current_status
-                    })
+                    if current_status:
+                        await websocket.send_json({
+                            "type": "session_status",
+                            "data": current_status
+                        })
+                    else:
+                        await websocket.send_json({
+                            "type": "error",
+                            "error": "Session no longer exists"
+                        })
+                        break
                 elif message == "get_metrics":
                     metrics = await translation_service.get_session_metrics(session_id)
                     await websocket.send_json({
@@ -212,23 +239,40 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 current_status = await translation_service.get_session_status(session_id)
                 if current_status:
                     await websocket.send_json({
-                        "type": "session_status",
+                        "type": "session_status", 
                         "data": current_status
                     })
                 else:
+                    logger.warning(f"⚠️ Session {session_id} no longer exists, closing WebSocket")
                     await websocket.close(code=4004, reason="Session no longer exists")
                     break
                     
             except WebSocketDisconnect:
-                logger.info(f"WebSocket disconnected for session {session_id}")
+                logger.info(f"🔌 WebSocket disconnected for session {session_id}")
                 break
                 
     except Exception as e:
-        logger.error(f"WebSocket error for session {session_id}: {e}")
-        await websocket.close(code=4000, reason="Internal server error")
+        logger.error(f"💥 WebSocket error for session {session_id}: {e}")
+        import traceback
+        logger.error(f"📍 Traceback: {traceback.format_exc()}")
+        
+        try:
+            # Only try to send/close if we have an active connection
+            await websocket.send_json({
+                "type": "error",
+                "error": "Internal server error",
+                "message": str(e)
+            })
+            await websocket.close(code=4000, reason="Internal server error")
+        except Exception as close_error:
+            logger.error(f"❌ Error during WebSocket cleanup: {close_error}")
     finally:
         # Clean up connection
-        await websocket_manager.disconnect(websocket)
+        try:
+            await websocket_manager.disconnect(websocket)
+            logger.info(f"🧹 WebSocket cleanup completed for session {session_id}")
+        except Exception as e:
+            logger.error(f"❌ WebSocket cleanup error: {e}")
 
 # Custom OpenAPI schema
 def custom_openapi():
